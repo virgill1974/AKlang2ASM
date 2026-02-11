@@ -1,5 +1,7 @@
 # AKlang2Asm
 
+*Author: Dan / Lemon*
+
 AKlang2Asm converts an AmigaKlang patch script into a fully expanded Motorola 68000 assembly routine.  The generated routine (labelled `AK_Generate`) renders every instrument of a patch into raw sample memory and mirrors the rendering logic of the original AmigaKlang tool, including loop generation, delays, comb filters, reverb, distortion, ADSR, clone/import operators, etc.
 
 ## Features
