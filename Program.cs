@@ -1,0 +1,2686 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.IO;
+using System.Threading.Tasks;
+
+namespace Aklang2Asm
+{
+	class Program
+	{
+		static Dictionary<string, string> mulRightShifts;
+		static Dictionary<string, string> mulLeftShifts;
+		static string localLabel = string.Empty;
+
+		static List<string> instrumentName = new List<string>();
+		static List<string> instrumentLength = new List<string>();
+		static List<int> instrumentLengthInt = new List<int>();
+		static List<string> instrumentRepeatOffset = new List<string>();
+		static List<string> instrumentRepeatLength = new List<string>();
+		static List<string> instrumentLoop = new List<string>();
+		static int sampleTotalLength = 0;
+		static int fineProgressLength = 0;
+
+		static List<string> externalSampleLength = new List<string>();
+		static List<int> externalSampleLengthInt = new List<int>();
+		static int externalSampleTotalLength = 0;
+
+		static int currentLargeBufferInstance = 0;
+		static int maxLargeBufferInstance = 0;
+		static int currentWordInstance = 0;
+		static int maxWordInstance = 0;
+		static int currentEnvDInstance = 0;
+		static int maxEnvdInstance = 0;
+
+		static bool usedNoise = false;
+
+		static bool useProgress = false;
+		static bool useFineProgress = false;
+
+		static void Main(string[] args)
+		{
+			mulRightShifts = new Dictionary<string, string>();
+			mulRightShifts.Add("#64", "#1");
+			mulRightShifts.Add("#32", "#2");
+			mulRightShifts.Add("#16", "#3");
+			mulRightShifts.Add("#8", "#4");
+			mulRightShifts.Add("#4", "#5");
+			mulRightShifts.Add("#2", "#6");
+			mulRightShifts.Add("#1", "#7");
+
+			mulLeftShifts = new Dictionary<string, string>();
+			mulLeftShifts.Add("#256", "#8");
+			mulLeftShifts.Add("#128", "#7");
+			mulLeftShifts.Add("#64", "#6");
+			mulLeftShifts.Add("#32", "#5");
+			mulLeftShifts.Add("#16", "#4");
+			mulLeftShifts.Add("#8", "#3");
+			mulLeftShifts.Add("#4", "#2");
+			mulLeftShifts.Add("#2", "#1");
+
+			Console.WriteLine("AKlang2Asm");
+			Console.WriteLine("");
+
+			if (args.Length < 2)
+			{
+				Console.WriteLine("Usage: Aklang2Asm <script.txt> <output.asm>");
+				Console.WriteLine("Press Any Key To Continue...");
+				Console.ReadKey();
+				return;
+			}
+
+			useProgress = false;
+			useFineProgress = false;
+
+			if (args.Length >= 3 )
+			{
+				if ( args[2] == "-p" )
+				{
+					Console.WriteLine("Using Progress");
+					useProgress = true;
+				}
+				else if ( args[2] == "-pf" )
+				{
+					Console.WriteLine("Using Fine Progress");
+					useProgress = true;
+					useFineProgress = true;
+				}
+				else
+				{
+					Console.WriteLine("Unknown option!");
+				}
+			}
+
+			if (!File.Exists(args[0]))
+			{
+				Console.WriteLine("Could not find script file: " + args[0]);
+				Console.WriteLine("Press Any Key To Continue...");
+				Console.ReadKey();
+				return;
+			}
+
+			string instrumentsMain = File.ReadAllText(args[0]);
+
+			List<string> instruments = instrumentsMain.Split('$').ToList();
+			string externalSampleInfo = instruments[0];
+			instruments.RemoveAt(0);
+
+			externalSampleInfo = externalSampleInfo.Replace("\r", "");
+			externalSampleInfo = externalSampleInfo.Replace("\n", "");
+			externalSampleInfo = externalSampleInfo.Replace(" ", "");
+			List<string> externalSampleLengths = externalSampleInfo.Split(',').ToList();
+
+			for (int i = 0; i < externalSampleLengths.Count; i++)
+			{
+				externalSampleLength.Add(externalSampleLengths[i]);
+				int length = int.Parse(externalSampleLengths[i]);
+				externalSampleLengthInt.Add(length);
+				externalSampleTotalLength += length;
+			}
+
+			string asmCode = string.Empty;
+
+			asmCode += DividerCode();
+			asmCode += ";\n";
+			asmCode += "; Generated with Aklang2Asm V1.11, by Dan/Lemon. 2021-2024.\n";
+			asmCode += ";\n";
+			asmCode += "; Based on Alcatraz Amigaklang rendering core. (c) Jochen 'Virgill' Feldkötter 2020.\n";
+			asmCode += ";\n";
+			asmCode += "; What's new in V1.1?\n";
+			asmCode += "; - Instance offsets fixed in ADSR operator\n";
+			asmCode += "; - Incorrect shift direction fixed in OnePoleFilter operator\n";
+			asmCode += "; - Loop Generator now correctly interleaved with instrument generation\n";
+			asmCode += "; - Fine progress includes loop generation, and new AK_FINE_PROGRESS_LEN added\n";
+			asmCode += "; - Reverb large buffer instance offsets were wrong, causing potential buffer overrun\n";
+			asmCode += ";\n";
+			asmCode += "; What's new in V1.11?\n";
+			asmCode += "; - Added value clamping to mode 1 of one-pole filter\n";
+			asmCode += ";\n";
+			asmCode += "; Call 'AK_Generate' with the following registers set:\n";
+			asmCode += "; a0 = Sample Buffer Start Address\n";
+			asmCode += "; a1 = %LARGEBUFFSIZE% Bytes Temporary Work Buffer Address (can be freed after sample rendering complete)\n";
+			asmCode += "; a2 = External Samples Address (need not be in chip memory, and can be freed after sample rendering complete)\n";
+			asmCode += "; a3 = Rendering Progress Address (2 modes available... see below)\n";
+			asmCode += ";\n";
+			asmCode += "; AK_FINE_PROGRESS equ 0 = rendering progress as a byte (current instrument number)\n";
+			asmCode += "; AK_FINE_PROGRESS equ 1 = rendering progress as a long (current sample byte)\n";
+			asmCode += ";\n";
+			asmCode += DividerCode();
+			asmCode += "\n";
+			asmCode += "AK_USE_PROGRESS			equ " + ( useProgress ? "1" : "0" ) +"\n";
+			asmCode += "AK_FINE_PROGRESS		equ " + ( useFineProgress ? "1" : "0" ) +"\n";
+			asmCode += "AK_FINE_PROGRESS_LEN	equ %FINEPROGRESSLEN%\n";
+			asmCode += "AK_SMP_LEN				equ %SAMPLESIZE%\n";
+			asmCode += "AK_EXT_SMP_LEN			equ " + externalSampleTotalLength.ToString() + "\n";
+			asmCode += "\n";
+			asmCode += "AK_Generate:\n";
+			asmCode += "\n";
+			asmCode += "				lea		AK_Vars(pc),a5\n";
+			asmCode += "\n";
+			asmCode += "				ifne	AK_USE_PROGRESS\n";
+			asmCode += "					ifeq	AK_FINE_PROGRESS\n";
+			asmCode += "						move.b	#-1,(a3)\n";
+			asmCode += "					else\n";
+			asmCode += "						move.l	#0,(a3)\n";
+			asmCode += "					endif\n";
+			asmCode += "				endif\n";
+			asmCode += "\n";
+			asmCode += "				; Create sample & external sample base addresses\n";
+			asmCode += "				lea		AK_SmpLen(a5),a6\n";
+			asmCode += "				lea		AK_SmpAddr(a5),a4\n";
+			asmCode += "				move.l	a0,d0\n";
+			asmCode += "				moveq	#31-1,d7\n";
+			asmCode += ".SmpAdrLoop		move.l	d0,(a4)+\n";
+			asmCode += "				add.l	(a6)+,d0\n";
+			asmCode += "				dbra	d7,.SmpAdrLoop\n";
+			asmCode += "				move.l	a2,d0\n";
+			asmCode += "				moveq	#8-1,d7\n";
+			asmCode += ".ExtSmpAdrLoop	move.l	d0,(a4)+\n";
+			asmCode += "				add.l	(a6)+,d0\n";
+			asmCode += "				dbra	d7,.ExtSmpAdrLoop\n";
+			asmCode += "\n";
+
+			if (externalSampleTotalLength > 0)
+			{
+				asmCode += "				; Convert external samples from stored deltas\n";
+				asmCode += "				move.l	a2,a6\n";
+				asmCode += "				move.w	#AK_EXT_SMP_LEN-1,d7\n";
+				asmCode += "				moveq	#0,d0\n";
+				asmCode += ".DeltaLoop		add.b	(a6),d0\n";
+				asmCode += "				move.b	d0,(a6)+\n";
+				asmCode += "				dbra	d7,.DeltaLoop\n";
+				asmCode += "\n";
+			}
+
+
+			// Iterate Instruments
+			for (int i = 0; i < instruments.Count; i++)
+			{
+				instruments[i] = instruments[i].Replace("\r", "");
+				instruments[i] = instruments[i].Replace("\n", "");
+
+				List<string> instrument = instruments[i].Split('#').ToList();
+
+				instrument[0] = instrument[0].Replace(" ", "");
+				string[] instrumentInfo = instrument[0].Split(',');
+
+				List<string> instrumentInstructions = instrument[1].Split(';').ToList();
+
+				instrumentName.Add(instrumentInfo[0]);
+				instrumentLength.Add(instrumentInfo[1]);
+				instrumentLengthInt.Add(int.Parse(instrumentInfo[1]));
+				sampleTotalLength += int.Parse(instrumentInfo[1]);
+				fineProgressLength += int.Parse(instrumentInfo[1]);
+				instrumentRepeatOffset.Add(instrumentInfo[2]);
+				instrumentRepeatLength.Add(instrumentInfo[3]);
+				instrumentLoop.Add(instrumentInfo[4]);
+
+				// Remove empty operator slots
+				for (int j = instrumentInstructions.Count - 1; j >= 0; j--)
+				{
+					if (string.IsNullOrEmpty(instrumentInstructions[j]))
+					{
+						instrumentInstructions.RemoveAt(j);
+					}
+				}
+
+				if (instrumentInstructions.Count == 0)
+				{
+					asmCode += DividerCode();
+					asmCode += "; Empty Instrument\n";
+					asmCode += DividerCode();
+					asmCode += "\n";
+					int tempInt = int.Parse(instrumentLength[i]);
+					if (tempInt != 0)
+					{
+						if (tempInt <= 8)
+						{
+							asmCode += "				addq.w	#" + instrumentLength[i] + ",a0\n";
+						}
+						else if (tempInt <= 32767)
+						{
+							asmCode += "				lea		" + instrumentLength[i] + "(a0),a0\n";
+						}
+						else
+						{
+							asmCode += "				add.l	#" + instrumentLength[i] + ",a0\n";
+						}
+
+						if (tempInt <= 8)
+						{
+							asmCode += "				ifne	AK_USE_PROGRESS\n";
+							asmCode += "					ifeq	AK_FINE_PROGRESS\n";
+							asmCode += "						addq.b	#1,(a3)\n";
+							asmCode += "					else\n";
+							asmCode += "						addq.l	#" + instrumentLength[i] + ",(a3)\n";
+							asmCode += "					endif\n";
+							asmCode += "				endif\n";
+						}
+						else
+						{
+							asmCode += "				ifne	AK_USE_PROGRESS\n";
+							asmCode += "					ifeq	AK_FINE_PROGRESS\n";
+							asmCode += "						addq.b	#1,(a3)\n";
+							asmCode += "					else\n";
+							asmCode += "						add.l	#" + instrumentLength[i] + ",(a3)\n";
+							asmCode += "					endif\n";
+							asmCode += "				endif\n";
+						}
+						asmCode += "\n";
+					}
+				}
+				else
+				{
+					asmCode += DividerCode();
+					asmCode += "; Instrument " + (i + 1).ToString() + " - " + instrumentName[i] + "\n";
+					asmCode += DividerCode();
+					asmCode += "\n";
+					if (i == 0)
+						asmCode += "				moveq	#%MAXLARGEBUFFERINSTANCES%,d0\n";
+					else
+						asmCode += "				moveq	#" + currentLargeBufferInstance.ToString() + ",d0\n";
+					asmCode += "				bsr		AK_ResetVars\n";
+					asmCode += "				moveq	#0,d7\n";
+					asmCode += "				ifne	AK_USE_PROGRESS\n";
+					asmCode += "					ifeq	AK_FINE_PROGRESS\n";
+					asmCode += "						addq.b	#1,(a3)\n";
+					asmCode += "					endif\n";
+					asmCode += "				endif\n";
+
+					asmCode += ".Inst" + (i + 1).ToString() + "Loop\n";
+
+					currentLargeBufferInstance = 0;
+					currentWordInstance = 0;
+					currentEnvDInstance = 0;
+
+					// Iterate operator steps within instrument
+					for (int j = 0; j < instrumentInstructions.Count; j++)
+					{
+						string output = instrumentInstructions[j].Substring(0, 2);
+
+						int varsStart = instrumentInstructions[j].IndexOf('(') + 1;
+						int varsEnd = instrumentInstructions[j].IndexOf(')');
+
+						string varsTemp = instrumentInstructions[j].Substring(varsStart, varsEnd - varsStart);
+						varsTemp = varsTemp.Replace(" ", "");
+						string[] inputs = varsTemp.Split(',');
+
+						localLabel = (i + 1).ToString() + "_" + (j + 1).ToString();
+
+						asmCode += "				; " + instrumentInstructions[j] + "\n";
+
+						if (instrumentInstructions[j].Contains("vol("))
+						{
+							asmCode += Volume(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("osc_saw("))
+						{
+							asmCode += Osc_Saw(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("osc_tri("))
+						{
+							asmCode += Osc_Tri(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("osc_sine("))
+						{
+							asmCode += Osc_Sine(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("osc_pulse("))
+						{
+							asmCode += Osc_Pulse(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("osc_noise("))
+						{
+							asmCode += Osc_Noise(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("sh("))
+						{
+							asmCode += Sample_And_Hold(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("envd("))
+						{
+							asmCode += Env_Decay(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("enva("))
+						{
+							asmCode += Env_Attack(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("mul("))
+						{
+							asmCode += Mul(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("add("))
+						{
+							asmCode += Add(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("ctrl("))
+						{
+							asmCode += Control(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("dly_cyc("))
+						{
+							asmCode += Delay(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("cmb_flt_n("))
+						{
+							asmCode += CombFilter(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("reverb("))
+						{
+							asmCode += Reverb(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("sv_flt_n("))
+						{
+							asmCode += SVFilter(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("onepole_flt("))
+						{
+							asmCode += OnePoleFilter(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("chordgen("))
+						{
+							asmCode += ChordGen(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("clone("))
+						{
+							asmCode += Clone(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("clone_reverse("))
+						{
+							asmCode += CloneReverse(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("imported_sample("))
+						{
+							asmCode += ImportedSample(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("distortion("))
+						{
+							asmCode += Distortion(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("adsr("))
+						{
+							asmCode += ADSR(output, inputs);
+						}
+
+						asmCode += "\n";
+					}
+
+					asmCode += "				asr.w	#8,d0\n";
+					asmCode += "				move.b	d0,(a0)+\n";
+					asmCode += "				ifne	AK_USE_PROGRESS\n";
+					asmCode += "					ifne	AK_FINE_PROGRESS\n";
+					asmCode += "						addq.l	#1,(a3)\n";
+					asmCode += "					endif\n";
+					asmCode += "				endif\n";
+					asmCode += "				addq.l	#1,d7\n";
+					asmCode += "				cmp.l	AK_SmpLen+" + (i << 2).ToString() + "(a5),d7\n";
+					asmCode += "				blt		.Inst" + (i + 1).ToString() + "Loop\n";
+					asmCode += "\n";
+
+					if (instrumentLoop[i] == "Y")
+					{
+						asmCode += "				movem.l a0-a1,-(sp)	;Stash sample base address & large buffer address for loop generator\n";
+					}
+
+					if (currentLargeBufferInstance > maxLargeBufferInstance)
+					{
+						maxLargeBufferInstance = currentLargeBufferInstance;
+					}
+					if (currentWordInstance > maxWordInstance)
+					{
+						maxWordInstance = currentWordInstance;
+					}
+					if (currentEnvDInstance > maxEnvdInstance)
+					{
+						maxEnvdInstance = currentEnvDInstance;
+					}
+
+					if ( instrumentLoop[i] == "Y" )
+                    {
+						if (instrumentLoop[i] == "Y")
+						{
+							asmCode += "\n";
+							asmCode += DividerCode();
+							asmCode += "; Instrument " + (i + 1).ToString() +
+									   " - Loop Generator (Offset: " + instrumentRepeatOffset[i] + " Length: " + instrumentRepeatLength[i] + "\n";
+							asmCode += DividerCode();
+							asmCode += "\n";
+							asmCode += LoopGenerator(instrumentRepeatLength[i], instrumentRepeatOffset[i], i.ToString());
+							asmCode += "\n";
+							asmCode += "				movem.l (sp)+,a0-a1	;Restore sample base address & large buffer address after loop generator\n";
+							asmCode += "\n";
+						}
+					}
+
+				}
+			}
+
+			if ((maxWordInstance & 1) == 1)
+			{
+				maxWordInstance += 1;
+			}
+
+
+			asmCode += "\n";
+
+			asmCode += DividerCode();
+			asmCode += "\n";
+
+			asmCode += "				; Clear first 2 bytes of each sample\n";
+			asmCode += "				lea		AK_SmpAddr(a5),a6\n";
+			asmCode += "				moveq	#0,d0\n";
+			asmCode += "				moveq	#31-1,d7\n";
+			asmCode += ".SmpClrLoop		move.l	(a6)+,a4\n";
+			asmCode += "				move.b	d0,(a4)+\n";
+			asmCode += "				move.b	d0,(a4)+\n";
+			asmCode += "				dbra	d7,.SmpClrLoop\n";
+
+			asmCode += "\n";
+			asmCode += "				rts\n";
+
+			asmCode += "\n";
+			asmCode += DividerCode();
+			asmCode += "\n";
+			asmCode += ClearVarsCode();
+			asmCode += "\n";
+			asmCode += DividerCode();
+			asmCode += "\n";
+			asmCode += VarsCode();
+			asmCode += "\n";
+			asmCode += DividerCode();
+
+
+			asmCode = asmCode.Replace("%SAMPLESIZE%", sampleTotalLength.ToString());
+			asmCode = asmCode.Replace("%FINEPROGRESSLEN%", fineProgressLength.ToString());
+
+			asmCode = asmCode.Replace("%LARGEBUFFSIZE%", (maxLargeBufferInstance * 4096).ToString());
+			asmCode = asmCode.Replace("%MAXLARGEBUFFERINSTANCES%", maxLargeBufferInstance.ToString());
+
+			asmCode = asmCode.Replace("%MAXWORDINSTANCES%", maxWordInstance.ToString());
+			asmCode = asmCode.Replace("%MAXENVDINSTANCES%", maxEnvdInstance.ToString());
+
+			File.WriteAllText(args[1], asmCode);
+
+			Console.WriteLine("Press Any Key To Continue...");
+			Console.ReadKey();
+		}
+
+
+
+
+		static string Volume(string output, string[] inputs)
+		{
+			//inline short vol(short val, UBYTE gain)
+			//{
+			//    return mulsw(val, gain) >> 7;
+			//}
+
+			// instance = 0-15
+			// val = V1-v4
+			// step = Immediate or V1-v4
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+			string val = RemapVarToRegisterOrImmediate(inputs[0]);
+			string gain = RemapVarToRegisterOrImmediate(inputs[1]);
+			string gainShift = mulRightShifts.ContainsKey(gain) ? mulRightShifts[gain] : string.Empty;
+
+			string code = string.Empty;
+
+			if (outReg != val)
+				code += "				move.w	@VAL,@OR\n";
+
+			if (gain != "#128")
+			{
+				if (mulRightShifts.ContainsKey(gain))
+					code += "				asr.w	@GS,@OR\n";
+				else
+				{
+					if (!gain.Contains("#"))
+					{
+						code += "				move.w	@GN,@TR1\n";
+						code += "				and.w	#255,@TR1\n";
+					}
+
+					code += "				muls	@TR1,@OR\n";
+					code += "				asr.l	#7,@OR\n";
+				}
+			}
+
+			if (!gain.Contains("#"))
+				code = code.Replace("@TR1", "d4");
+			else
+				code = code.Replace("@TR1", gain);
+
+			code = code.Replace("@VAL", val);
+			code = code.Replace("@GN", gain);
+			code = code.Replace("@GS", gainShift);
+			code = code.Replace("@OR", outReg);
+
+			return code;
+		}
+
+		static string Osc_Saw(string output, string[] inputs)
+		{
+			//short osc_saw(BYTE instance, short freq, UBYTE gain)
+			//{
+			//    counter_saw[instance] += freq;
+			//    return vol(counter_saw[instance], gain);
+			//}
+
+			// instance = 0-15
+			// freq = Immediate or V1-v4
+			// gain = Immediate or V1-v4
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+
+			//string instance = GetInstanceOffset(inputs[0], 2);
+			int instanceVal = (currentWordInstance * 2);
+			string instance = instanceVal.ToString();
+
+			string freq = RemapVarToRegisterOrImmediate(inputs[1]);
+			string gain = RemapVarToRegisterOrImmediate(inputs[2]);
+			string gainShift = mulRightShifts.ContainsKey(gain) ? mulRightShifts[gain] : string.Empty;
+
+			string code = string.Empty;
+
+			code += "				add.w	@FR,AK_OpInstance+@IN(a5)\n";
+
+			if (gain == "#128")
+			{
+				code += "				move.w	AK_OpInstance+@IN(a5),@OR\n";
+			}
+			else
+			{
+
+				if (mulRightShifts.ContainsKey(gain))
+				{
+					code += "				move.w	AK_OpInstance+@IN(a5),@OR\n";
+					code += "				asr.w	@GS,@OR\n";
+				}
+				else
+				{
+					if (!gain.Contains("#"))
+					{
+						code += "				move.w	@GN,@TR1\n";
+						code += "				and.w	#255,@TR1\n";
+					}
+
+					code += "				move.w	AK_OpInstance+@IN(a5),@OR\n";
+					code += "				muls	@TR1,@OR\n";
+					code += "				asr.l	#7,@OR\n";
+				}
+			}
+
+			if (!gain.Contains("#"))
+				code = code.Replace("@TR1", "d4");
+			else
+				code = code.Replace("@TR1", gain);
+
+			code = code.Replace("@IN", instance);
+			code = code.Replace("@FR", freq);
+			code = code.Replace("@GN", gain);
+			code = code.Replace("@GS", gainShift);
+			code = code.Replace("@OR", outReg);
+
+			currentWordInstance += 1;
+
+			return code;
+		}
+
+		static string Osc_Tri(string output, string[] inputs)
+		{
+			//short osc_tri(BYTE instance, short freq, UBYTE gain)
+			//{
+			//   short buf = counter_tri[instance] += freq; if (buf < 0) buf = 65535 - buf;
+			//    buf -= 16384; buf <<= 1;
+			//    return vol(buf, gain);
+			//}
+
+			// instance = 0-15
+			// freq = Immediate or V1-v4
+			// gain = Immediate or V1-v4
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+
+			//string instance = GetInstanceOffset(inputs[0], 2);
+			int instanceVal = (currentWordInstance * 2);
+			string instance = instanceVal.ToString();
+
+			string freq = RemapVarToRegisterOrImmediate(inputs[1]);
+			string gain = RemapVarToRegisterOrImmediate(inputs[2]);
+			string gainShift = mulRightShifts.ContainsKey(gain) ? mulRightShifts[gain] : string.Empty;
+
+			string code = string.Empty;
+
+			code += "				add.w	@FR,AK_OpInstance+@IN(a5)\n";
+			if (!gain.Contains("#"))
+			{
+				code += "				move.w	@GN,@TR1\n";
+				code += "				and.w	#255,@TR1\n";
+			}
+			code += "				move.w	AK_OpInstance+@IN(a5),@OR\n";
+			code += "				bge.s	.TriNoInvert_" + localLabel + "\n";
+			code += "				not.w	@OR\n";
+			code += ".TriNoInvert_" + localLabel + "\n";
+			code += "				sub.w	#16384,@OR\n";
+			code += "				add.w	@OR,@OR\n";
+
+			if (gain != "#128")
+			{
+				if (mulRightShifts.ContainsKey(gain))
+				{
+					code += "				asr.w	@GS,@OR\n";
+				}
+				else
+				{
+					code += "				muls	@TR1,@OR\n";
+					code += "				asr.l	#7,@OR\n";
+				}
+			}
+
+			if (!gain.Contains("#"))
+				code = code.Replace("@TR1", "d4");
+			else
+				code = code.Replace("@TR1", gain);
+
+			code = code.Replace("@IN", instance);
+			code = code.Replace("@FR", freq);
+			code = code.Replace("@GN", gain);
+			code = code.Replace("@GS", gainShift);
+			code = code.Replace("@OR", outReg);
+
+			currentWordInstance += 1;
+
+			return code;
+		}
+
+		static string Osc_Pulse(string output, string[] inputs)
+		{
+			//short osc_pulse(BYTE instance, short freq, UBYTE gain, UBYTE dutycycle)
+			//{
+			//	short buf = counter_pulse[instance] += freq;
+			//	if (buf < (dutycycle - 63) << 9) buf = -32768; else buf = 32767;
+			//	return vol(buf, gain);
+			//}
+
+			// instance = 0-15
+			// freq = Immediate or V1-v4
+			// gain = Immediate or V1-v4
+			// dutycycle = Immediate or V1-v4
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+
+			//string instance = GetInstanceOffset(inputs[0], 2);
+			int instanceVal = (currentWordInstance * 2);
+			string instance = instanceVal.ToString();
+
+			string freq = RemapVarToRegisterOrImmediate(inputs[1]);
+			string gain = RemapVarToRegisterOrImmediate(inputs[2]);
+			string gainShift = mulRightShifts.ContainsKey(gain) ? mulRightShifts[gain] : string.Empty;
+			string dutyCycle = RemapVarToRegisterOrImmediate(inputs[3]);
+
+			string code = string.Empty;
+
+			code += "				add.w	@FR,AK_OpInstance+@IN(a5)\n";
+
+			if (!gain.Contains("#"))
+			{
+				code += "				move.w	@GN,@TR2\n";
+				code += "				and.w	#255,@TR2\n";
+			}
+
+			if (dutyCycle.Contains("#"))
+			{
+				int dutyCycleInt = int.Parse(dutyCycle.Replace("#", ""));
+				if (dutyCycleInt != 63)
+				{
+					int index = dutyCycle.IndexOf("#");
+					code += "				cmp.w	#((" + dutyCycle.Remove(index, 1) + "-63)<<9),AK_OpInstance+@IN(a5)\n";
+				}
+			}
+			else
+			{
+				if (dutyCycle == gain)
+				{
+					code += "				move.w	@TR2,@TR1\n";
+				}
+				else
+				{
+					code += "				move.w	@DC,@TR1\n";
+					code += "				and.w	#255,@TR1\n";
+				}
+				code += "				sub.w	#63,@TR1\n";
+				code += "				asl.w	#8,@TR1\n";
+				code += "				add.w	@TR1,@TR1\n";
+				code += "				cmp.w	AK_OpInstance+@IN(a5),@TR1\n";
+			}
+			code += "				slt		@OR\n";
+			code += "				ext.w	@OR\n";
+			code += "				eor.w	#$7fff,@OR\n";
+
+			if (gain != "#128")
+			{
+				if (mulRightShifts.ContainsKey(gain))
+				{
+					code += "				asr.w	@GS,@OR\n";
+				}
+				else
+				{
+					code += "				muls	@TR2,@OR\n";
+					code += "				asr.l	#7,@OR\n";
+				}
+			}
+
+			code = code.Replace("@TR1", "d4");
+
+			if (!gain.Contains("#"))
+				code = code.Replace("@TR2", "d5");
+			else
+				code = code.Replace("@TR2", gain);
+
+			code = code.Replace("@IN", instance);
+			code = code.Replace("@FR", freq);
+			code = code.Replace("@DC", dutyCycle);
+			code = code.Replace("@GN", gain);
+			code = code.Replace("@GS", gainShift);
+			code = code.Replace("@OR", outReg);
+
+			currentWordInstance += 1;
+
+			return code;
+		}
+
+		static string Osc_Sine(string output, string[] inputs)
+		{
+			//short osc_sine(BYTE instance, short freq, UBYTE gain)
+			//{
+			//    int temp; short res; short buf = counter_sine[instance] += freq;
+			//    buf -= 16384; temp = mulsw(buf, 32767 - abs(buf)); res = temp >> 16; res <<= 3;
+			//    return vol(res, gain);
+			//}
+
+			// instance = 0-15
+			// freq = Immediate or V1-v4
+			// gain = Immediate or V1-v4
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+
+			//string instance = GetInstanceOffset(inputs[0], 2);
+			int instanceVal = (currentWordInstance * 2);
+			string instance = instanceVal.ToString();
+
+			string freq = RemapVarToRegisterOrImmediate(inputs[1]);
+			string gain = RemapVarToRegisterOrImmediate(inputs[2]);
+			string gainShift = mulRightShifts.ContainsKey(gain) ? mulRightShifts[gain] : string.Empty;
+
+			string code = string.Empty;
+
+			code += "				add.w	@FR,AK_OpInstance+@IN(a5)\n";
+			if (!gain.Contains("#"))
+			{
+				code += "				move.w	@GN,@TR1\n";
+				code += "				and.w	#255,@TR1\n";
+			}
+			code += "				move.w	AK_OpInstance+@IN(a5),@OR\n";
+			code += "				sub.w	#16384,@OR\n";
+			code += "				move.w	@OR,d5\n";
+			code += "				bge.s	.SineNoAbs_" + localLabel + "\n";
+			code += "				neg.w	d5\n";
+			code += ".SineNoAbs_" + localLabel + "\n";
+			code += "				move.w	#32767,d6\n";
+			code += "				sub.w	d5,d6\n";
+			code += "				muls	d6,@OR\n";
+			code += "				swap	@OR\n";
+			code += "				asl.w	#3,@OR\n";
+
+			if (gain != "#128")
+			{
+				if (mulRightShifts.ContainsKey(gain))
+				{
+					code += "				asr.w	@GS,@OR\n";
+				}
+				else
+				{
+					code += "				muls	@TR1,@OR\n";
+					code += "				asr.l	#7,@OR\n";
+				}
+			}
+
+			if (!gain.Contains("#"))
+				code = code.Replace("@TR1", "d4");
+			else
+				code = code.Replace("@TR1", gain);
+
+			code = code.Replace("@IN", instance);
+			code = code.Replace("@FR", freq);
+			code = code.Replace("@GN", gain);
+			code = code.Replace("@GS", gainShift);
+			code = code.Replace("@OR", outReg);
+
+			currentWordInstance += 1;
+
+			return code;
+		}
+
+		static string Osc_Noise(string output, string[] inputs)
+		{
+			//short osc_noise(UBYTE gain)
+			//{
+			//   static int g_x1 = 0x67452301; static int g_x2 = 0xefcdab89; static int g_x3 = 0;
+			//    g_x1 ^= g_x2;
+			//    g_x3 += g_x2;
+			//    g_x2 += g_x1;
+			//    short buf = g_x3;
+			//    return vol(buf, gain);
+			//}
+
+			// instance = 0-15
+			// gain = Immediate or V1-v4
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+			string gain = RemapVarToRegisterOrImmediate(inputs[0]);
+			string gainShift = mulRightShifts.ContainsKey(gain) ? mulRightShifts[gain] : string.Empty;
+
+			string code = string.Empty;
+
+			code += "				move.l	AK_NoiseSeeds+0(a5),d4\n";
+			code += "				move.l	AK_NoiseSeeds+4(a5),d5\n";
+			code += "				eor.l	d5,d4\n";
+			code += "				move.l	d4,AK_NoiseSeeds+0(a5)\n";
+			code += "				add.l	d5,AK_NoiseSeeds+8(a5)\n";
+			code += "				add.l	d4,AK_NoiseSeeds+4(a5)\n";
+			if (!gain.Contains("#"))
+			{
+				code += "				move.w	@GN,@TR1\n";
+				code += "				and.w	#255,@TR1\n";
+			}
+			code += "				move.w	AK_NoiseSeeds+10(a5),@OR\n";
+
+			if (gain != "#128")
+			{
+				if (mulRightShifts.ContainsKey(gain))
+				{
+					code += "				asr.w	@GS,@OR\n";
+				}
+				else
+				{
+					code += "				muls	@TR1,@OR\n";
+					code += "				asr.l	#7,@OR\n";
+				}
+			}
+
+			if (!gain.Contains("#"))
+				code = code.Replace("@TR1", "d4");
+			else
+				code = code.Replace("@TR1", gain);
+
+			code = code.Replace("@GN", gain);
+			code = code.Replace("@GS", gainShift);
+			code = code.Replace("@OR", outReg);
+
+			usedNoise = true;
+
+			return code;
+		}
+
+		static string Sample_And_Hold(string output, string[] inputs)
+		{
+			//short sh(BYTE instance, short val1, UBYTE step)
+			//{
+			//	short step2 = mulsw(step, step) >> 2;
+			//	if (counter_sh[instance] == 0)
+			//		buffer_sh[instance] = val1;
+			//	if (counter_sh[instance] == step2)
+			//		counter_sh[instance] = -1;
+			//	counter_sh[instance] += 1;
+			//	return buffer_sh[instance];
+			//}
+
+			//short sh(BYTE instance, short val1, UBYTE step)
+			//{
+			//	short step2 = mulsw(step, step) >> 2;
+			//	counter_sh[instance]--;
+			//	if (counter_sh[instance] < 0)
+			//	{
+			//		buffer_sh[instance] = val1;
+			//		counter_sh[instance] = step2;
+			//	}
+			//	return buffer_sh[instance];
+			//}
+
+			// instance = 0-15
+			// val = Immediate or V1-v4
+			// step = Immediate or V1-v4
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+			// string instance = GetInstanceOffset(inputs[0], 2);
+			int instance1Val = (currentWordInstance * 2);
+			string instance1 = instance1Val.ToString();
+			int instance2Val = (currentWordInstance * 2) + 2;
+			string instance2 = instance2Val.ToString();
+			string val = RemapVarToRegisterOrImmediate(inputs[1]);
+			string step = RemapVarToRegisterOrImmediate(inputs[2]);
+			string step2 = string.Empty;
+			bool stepImmediate = step.Contains("#");
+
+			string code = string.Empty;
+
+			if (!stepImmediate)
+			{
+				code += "				move.w	@STR,d4\n";
+				code += "				and.w	#255,d4\n";
+				code += "				muls	d4,d4\n";
+				code += "				asr.l	#2,d4\n";
+			}
+			else
+			{
+				int tempStep = int.Parse(inputs[2]);
+				step2 = "#" + ((tempStep * tempStep) >> 2).ToString();
+			}
+
+			code += "				sub.w	#1,AK_OpInstance+@IN1(a5)\n";
+			code += "				bge.s	.SHNoStore_" + localLabel + "\n";
+			code += "				move.w	@VL,AK_OpInstance+@IN2(a5)\n";
+			if (!stepImmediate)
+				code += "				move.w	d4,AK_OpInstance+@IN1(a5)\n";
+			else
+				code += "				move.w	@STI,AK_OpInstance+@IN1(a5)\n";
+			code += ".SHNoStore_" + localLabel + "\n";
+			code += "				move.w	AK_OpInstance+@IN2(a5),@OR\n";
+
+			code = code.Replace("@IN1", instance1);
+			code = code.Replace("@IN2", instance2);
+			code = code.Replace("@STR", step);
+			code = code.Replace("@STI", step2);
+			code = code.Replace("@VL", val);
+			code = code.Replace("@OR", outReg);
+
+			currentWordInstance += 2;
+
+			return code;
+		}
+
+
+		static string Env_Decay(string output, string[] inputs)
+		{
+			//short envd(BYTE instance, BYTE decay, BYTE sustain, UBYTE gain)
+			//{
+			//	int sustain32 = sustain << 24;
+			//  int decay32 = decay32Table[decay];
+			//  int buf32 = counter_envd[instance];
+			//  buf32 -= decay32;
+			//  if( buf32 <= sustain32 )
+			//     buf32 = sustain32;
+			//  counter_envd[instance] = buf32;
+			//  short buf2 = buf>>16;
+			//	return vol(buf2, gain);
+			//z}
+
+			// instance = 0-15
+			// attack = Immediate
+			// sustain = Immediate
+			// gain = Immediate or V1-V4
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+
+			//string instance = GetInstanceOffset(inputs[0], 4);
+			int instanceVal = (currentEnvDInstance * 4);
+			string instance = instanceVal.ToString();
+
+			string decay32 = GetDecayValue(int.Parse(inputs[1]));
+			int sustain32Val = (int.Parse(inputs[2]) << 24);
+			string sustain32 = "#" + (int.Parse(inputs[2]) << 24).ToString();
+			string gain = RemapVarToRegisterOrImmediate(inputs[3]);
+			string gainShift = mulRightShifts.ContainsKey(gain) ? mulRightShifts[gain] : string.Empty;
+
+			string code = string.Empty;
+
+			if (!gain.Contains("#"))
+			{
+				code += "				move.w	@GN,@TR1\n";
+				code += "				and.w	#255,@TR1\n";
+			}
+			code += "				move.l	AK_EnvDValue+@IN(a5),d5\n";
+			code += "				move.l	d5,@OR\n";
+			code += "				swap	@OR\n";
+			code += "				sub.l	@DV,d5\n";
+			if (sustain32 != "#0")
+			{
+				code += "				cmp.l	@SV,d5\n";
+			}
+			code += "				bgt.s   .EnvDNoSustain_" + localLabel + "\n"; // Need to look at this in future.. potential signed/unsigned issues on large decays?
+			if (sustain32Val <= 127 && sustain32Val >= -128)
+				code += "				moveq	@SV,d5\n";
+			else
+				code += "				move.l	@SV,d5\n";
+			code += ".EnvDNoSustain_" + localLabel + "\n";
+			code += "				move.l	d5,AK_EnvDValue+@IN(a5)\n";
+
+			if (gain != "#128")
+			{
+				if (mulRightShifts.ContainsKey(gain))
+				{
+					code += "				asr.w	@GS,@OR\n";
+				}
+				else
+				{
+					code += "				muls	@TR1,@OR\n";
+					code += "				asr.l	#7,@OR\n";
+				}
+			}
+
+			if (!gain.Contains("#"))
+				code = code.Replace("@TR1", "d4");
+			else
+				code = code.Replace("@TR1", gain);
+
+			code = code.Replace("@IN", instance);
+			code = code.Replace("@GN", gain);
+			code = code.Replace("@GS", gainShift);
+			code = code.Replace("@OR", outReg);
+			code = code.Replace("@DV", decay32);
+			code = code.Replace("@SV", sustain32);
+
+			currentEnvDInstance += 1;
+
+			return code;
+		}
+
+		static string Env_Attack(string output, string[] inputs)
+		{
+			//short enva(BYTE instance, BYTE attack, BYTE sustain, UBYTE gain)
+			//{
+			//	int sustain32 = sustain << 24;
+			//  int buf32 = counter_enva[instance];
+			//  int attack32 = decay32Table[decay];
+			//  buf32 += attack32;
+			//  if( buf32 > 32767<<16 )
+			//     buf32 = 32767<<16;
+			//  counter_enva[instance] = buf32
+			//  short buf2 = buf>>16;
+			//	return vol(buf2, gain);
+			//}
+
+			// instance = 0-15
+			// attack = Immediate
+			// sustain = Immediate
+			// gain = Immediate or V1-V4
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+
+			//string instance = GetInstanceOffset(inputs[0], 4);
+			int instanceVal = (currentWordInstance * 2);
+			string instance = instanceVal.ToString();
+
+			string attack32 = GetDecayValue(int.Parse(inputs[1]));
+			string sustain32 = "#" + (int.Parse(inputs[2]) << 24).ToString();
+			string gain = RemapVarToRegisterOrImmediate(inputs[3]);
+			string gainShift = mulRightShifts.ContainsKey(gain) ? mulRightShifts[gain] : string.Empty;
+
+			string code = string.Empty;
+
+			if (!gain.Contains("#"))
+			{
+				code += "				move.w	@GN,@TR1\n";
+				code += "				and.w	#255,@TR1\n";
+			}
+			code += "				move.l	AK_OpInstance+@IN(a5),d5\n";
+			code += "				move.l	d5,@OR\n";
+			code += "				swap	@OR\n";
+			code += "				add.l	@AV,d5\n";
+			code += "				bvc.s   .EnvANoMax_" + localLabel + "\n";
+			code += "				move.l	#32767<<16,d5\n";
+			code += ".EnvANoMax_" + localLabel + "\n";
+			code += "				move.l	d5,AK_OpInstance+@IN(a5)\n";
+
+			if (gain != "#128")
+			{
+				if (mulRightShifts.ContainsKey(gain))
+				{
+					code += "				asr.w	@GS,@OR\n";
+				}
+				else
+				{
+					code += "				muls	@TR1,@OR\n";
+					code += "				asr.l	#7,@OR\n";
+				}
+			}
+
+			if (!gain.Contains("#"))
+				code = code.Replace("@TR1", "d4");
+			else
+				code = code.Replace("@TR1", gain);
+
+			code = code.Replace("@IN", instance);
+			code = code.Replace("@GN", gain);
+			code = code.Replace("@GS", gainShift);
+			code = code.Replace("@OR", outReg);
+			code = code.Replace("@AV", attack32);
+			code = code.Replace("@SV", sustain32);
+
+			currentWordInstance += 2;
+
+			return code;
+		}
+
+		static string Mul(string output, string[] inputs)
+		{
+			//inline short mul(short val1, short val2)
+			//{
+			//    return mulsw(val1, val2) >> 15;
+			//}
+
+			// val1 = Immediate or V1-V4
+			// val2 = Immediate or V1-V4
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+			string val1 = RemapVarToRegisterOrImmediate(inputs[0]);
+			string val2 = RemapVarToRegisterOrImmediate(inputs[1]);
+
+			string code = string.Empty;
+
+			if (outReg == val1)
+			{
+				code += "				muls	@V2,@OR\n";
+			}
+			else if (outReg == val2)
+			{
+				code += "				muls	@V1,@OR\n";
+			}
+			else
+			{
+				code += "				move.w	@V1,@OR\n";
+				code += "				muls	@V2,@OR\n";
+			}
+
+			code += "				add.l	@OR,@OR\n";
+			code += "				swap	@OR\n";
+
+			code = code.Replace("@OR", outReg);
+			code = code.Replace("@V1", val1);
+			code = code.Replace("@V2", val2);
+
+			return code;
+		}
+
+		static string Add(string output, string[] inputs)
+		{
+			//inline short add(short val1, short val2)
+			//{
+			//    return clamp(val1 + val2);
+			//}
+
+			// val1 = Immediate or V1-V4
+			// val2 = Immediate or V1-V4
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+			string val1 = RemapVarToRegisterOrImmediate(inputs[0]);
+			string val2 = RemapVarToRegisterOrImmediate(inputs[1]);
+
+			string code = string.Empty;
+
+			if (outReg == val1)
+			{
+				code += "				add.w	@V2,@OR\n";
+			}
+			else if (outReg == val2)
+			{
+				code += "				add.w	@V1,@OR\n";
+			}
+			else
+			{
+				code += "				move.w	@V1,@OR\n";
+				code += "				add.w	@V2,@OR\n";
+			}
+
+			code += "				bvc.s	.AddNoClamp_" + localLabel + "\n";
+			code += "				spl		@OR\n";
+			code += "				ext.w	@OR\n";
+			code += "				eor.w	#$7fff,@OR\n";
+			code += ".AddNoClamp_" + localLabel + "\n";
+
+			code = code.Replace("@OR", outReg);
+			code = code.Replace("@V1", val1);
+			code = code.Replace("@V2", val2);
+
+			return code;
+		}
+
+
+		static string Control(string output, string[] inputs)
+		{
+			//inline BYTE ctrl(short val)
+			//{
+			//	return (val >> 9) + 64;
+			//}
+
+			// val = V1-V4
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+			string input = RemapVarToRegisterOrImmediate(inputs[0]);
+
+			string code = string.Empty;
+
+			if (outReg != input)
+			{
+				code += "				move.w	@IR,@OR\n";
+			}
+
+			code += "				moveq	#9,d4\n";
+			code += "				asr.w	d4,@OR\n";
+			code += "				add.w	#64,@OR\n";
+
+			code = code.Replace("@OR", outReg);
+			code = code.Replace("@IR", input);
+
+			return code;
+		}
+
+		static string Delay(string output, string[] inputs)
+		{
+			//short dly_cyc(BYTE instance, short val, short delay, UBYTE gain)
+			//{
+			//	if (delay > 2047) delay = 2047;
+			//	static short i[16];
+			//  buffern[instance][i[instance]] = vol(val, gain);
+			//  i[instance]++;
+			//	if (i[instance] >= delay)
+			//		i[instance] = 0;
+			//	return buffern[instance][i[instance]];
+			//}
+
+			// instance = 0-15
+			// val = V1-V4
+			// delay = Immediate or V1-V4
+			// gain = Immediate or V1-V4
+
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+
+			//string instance = GetInstanceOffset(inputs[0], 2);
+			int instanceVal = (currentWordInstance * 2);
+			string instance = instanceVal.ToString();
+
+			//string instance2 = GetInstanceOffset(inputs[0], 4096);
+			//int instance2Val = int.Parse(instance2);
+			int instance2Val = (currentLargeBufferInstance * 4096);
+			string instance2 = instance2Val.ToString();
+
+			string val = RemapVarToRegisterOrImmediate(inputs[1]);
+			string delay = RemapVarToRegisterOrImmediate(inputs[2]);
+			bool delayImmediate = delay.Contains("#");
+			string gain = RemapVarToRegisterOrImmediate(inputs[3]);
+			string gainShift = mulRightShifts.ContainsKey(gain) ? mulRightShifts[gain] : string.Empty;
+
+			string code = string.Empty;
+
+			code += "				move.w	@VL,d4\n";
+
+			if (gain != "#128")
+			{
+				if (mulRightShifts.ContainsKey(gain))
+				{
+					code += "				asr.w	@GS,@d4\n";
+				}
+				else if (gain.Contains("#"))
+				{
+					code += "				muls	@GN,d4\n";
+					code += "				asr.l	#7,d4\n";
+				}
+				else
+				{
+					code += "				move.w	@GN,d5\n";
+					code += "				and.w	#255,d5\n";
+					code += "				muls	d5,d4\n";
+					code += "				asr.l	#7,d4\n";
+				}
+			}
+
+			if (instance2Val == 0)
+			{
+				code += "				move.l	a1,a4\n";
+			}
+			else if (instance2Val < 32767)
+			{
+				code += "				lea		@IN2(a1),a4\n";
+			}
+			else
+			{
+				code += "				move.l	a1,a4\n";
+				code += "				add.l	#@IN2,a4\n";
+			}
+			code += "				move.w	AK_OpInstance+@IN1(a5),d5\n";
+			code += "				move.w	d4,(a4,d5.w)\n";
+
+			if (delayImmediate)
+			{
+				code += "				addq.w	#2,d5\n";
+				code += "				cmp.w	@DL<<1,d5\n";
+				code += "				blt.s	.NoDelayReset_" + localLabel + "\n";
+				code += "				moveq	#0,d5\n";
+				code += ".NoDelayReset_" + localLabel + "\n";
+				code += "				move.w  d5,AK_OpInstance+@IN1(a5)\n";
+				code += "				move.w	(a4,d5.w),@OR\n";
+			}
+			else
+			{
+				code += "				move.w	@DL,d6\n";
+				code += "               cmp.w	#2047,d6\n";
+				code += "				ble.s	.NoClampDelay_" + localLabel + "\n";
+				code += "				move.w  #2047,d6\n";
+				code += ".NoClampDelay_" + localLabel + "\n";
+				code += "				add.w	d6,d6\n";
+				code += "				addq.w	#2,d5\n";
+				code += "				cmp.w	d6,d5\n";
+				code += "				blt.s	.NoDelayReset_" + localLabel + "\n";
+				code += "				moveq	#0,d5\n";
+				code += ".NoDelayReset_" + localLabel + "\n";
+				code += "				move.w  d5,AK_OpInstance+@IN1(a5)\n";
+				code += "				move.w	(a4,d5.w),@OR\n";
+			}
+
+			code = code.Replace("@IN1", instance);
+			code = code.Replace("@IN2", instance2);
+			code = code.Replace("@VL", val);
+			code = code.Replace("@DL", delay);
+			code = code.Replace("@GN", gain);
+			code = code.Replace("@GS", gainShift);
+			code = code.Replace("@OR", outReg);
+
+			currentLargeBufferInstance += 1;
+			currentWordInstance += 1;
+
+			return code;
+		}
+
+		static string CombFilter(string output, string[] inputs)
+		{
+			//short cmb_flt_n(BYTE instance, short val, short delay, UBYTE feedback, UBYTE gain)
+			//{
+			//	if (delay > 2047) delay = 2047;
+			//	static short i[16];
+			//	short output = buffern[instance][i[instance]] = add(val, (vol(buffern[instance][i[instance]], feedback)));
+			//  i[instance]++;
+			//  if ( [instance] >= delay)
+			//		i[instance] = 0;
+			//	return vol(output, gain);
+			//}
+
+			// instance = 0-15
+			// val = V1-V4
+			// delay = Immediate or V1-V4
+			// feedback = Immediate or V1-V4
+			// gain = Immediate or V1-V4
+
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+
+			//string instance = GetInstanceOffset(inputs[0], 2);
+			int instanceVal = (currentWordInstance * 2);
+			string instance = instanceVal.ToString();
+
+			//string instance2 = GetInstanceOffset(inputs[0], 4096);
+			//int instance2Val = int.Parse(instance2);
+			int instance2Val = (currentLargeBufferInstance * 4096);
+			string instance2 = instance2Val.ToString();
+
+			string val = RemapVarToRegisterOrImmediate(inputs[1]);
+			string delay = RemapVarToRegisterOrImmediate(inputs[2]);
+			bool delayImmediate = delay.Contains("#");
+			string feedback = RemapVarToRegisterOrImmediate(inputs[3]);
+			string feedbackShift = mulRightShifts.ContainsKey(feedback) ? mulRightShifts[feedback] : string.Empty;
+			string gain = RemapVarToRegisterOrImmediate(inputs[4]);
+			string gainShift = mulRightShifts.ContainsKey(gain) ? mulRightShifts[gain] : string.Empty;
+
+			string code = string.Empty;
+
+			if (instance2Val == 0)
+			{
+				code += "				move.l	a1,a4\n";
+			}
+			else if (instance2Val < 32767)
+			{
+				code += "				lea		@IN2(a1),a4\n";
+			}
+			else
+			{
+				code += "				move.l	a1,a4\n";
+				code += "				add.l	#@IN2,a4\n";
+			}
+			code += "				move.w	AK_OpInstance+@IN1(a5),d5\n";
+			code += "				move.w	(a4,d5.w),d4\n";
+
+			if (feedback != "#128")
+			{
+				if (mulRightShifts.ContainsKey(feedback))
+				{
+					code += "				asr.w	@FS,d4\n";
+				}
+				else if (feedback.Contains("#"))
+				{
+					code += "				muls	@FB,d4\n";
+					code += "				asr.l	#7,d4\n";
+				}
+				else
+				{
+					code += "				move.w	@FB,d6\n";
+					code += "				and.w	#255,d6\n";
+					code += "				muls	d6,d4\n";
+					code += "				asr.l	#7,d4\n";
+				}
+			}
+
+			code += "				add.w	@VL,d4\n";
+			code += "				bvc.s	.CombAddNoClamp_" + localLabel + "\n";
+			code += "				spl		d4\n";
+			code += "				ext.w	d4\n";
+			code += "				eor.w	#$7fff,d4\n";
+			code += ".CombAddNoClamp_" + localLabel + "\n";
+			code += "				move.w	d4,(a4,d5.w)\n";
+
+			if (delayImmediate)
+			{
+				code += "				addq.w	#2,d5\n";
+				code += "				cmp.w	@DL<<1,d5\n";
+				code += "				blt.s	.NoCombReset_" + localLabel + "\n";
+				code += "				moveq	#0,d5\n";
+				code += ".NoCombReset_" + localLabel + "\n";
+				code += "				move.w  d5,AK_OpInstance+@IN1(a5)\n";
+			}
+			else
+			{
+				code += "				move.w	@DL,d6\n";
+				code += "               cmp.w	#2047,d6\n";
+				code += "				ble.s	.NoClampComb_" + localLabel + "\n";
+				code += "				move.w  #2047,d6\n";
+				code += ".NoClampComb_" + localLabel + "\n";
+				code += "				add.w	d6,d6\n";
+				code += "				addq.w	#2,d5\n";
+				code += "				cmp.w	d6,d5\n";
+				code += "				blt.s	.NoCombReset_" + localLabel + "\n";
+				code += "				moveq	#0,d5\n";
+				code += ".NoCombReset_" + localLabel + "\n";
+				code += "				move.w  d5,AK_OpInstance+@IN1(a5)\n";
+			}
+
+			if (gain != "#128")
+			{
+				if (mulRightShifts.ContainsKey(gain))
+				{
+					code += "				move.w	d4,@OR\n";
+					code += "				asr.w	@GS,@OR\n";
+				}
+				else if (gain.Contains("#"))
+				{
+					code += "				move.w	d4,@OR\n";
+					code += "				muls	@GN,@OR\n";
+					code += "				asr.l	#7,@OR\n";
+				}
+				else
+				{
+					code += "				move.w	@GN,d5\n";
+					code += "				and.w	#255,d5\n";
+					code += "				move.w	d4,@OR\n";
+					code += "				muls	d5,@OR\n";
+					code += "				asr.l	#7,@OR\n";
+				}
+			}
+			else
+				code += "				move.w	d4,@OR\n";
+
+			code = code.Replace("@IN1", instance);
+			code = code.Replace("@IN2", instance2);
+			code = code.Replace("@VL", val);
+			code = code.Replace("@DL", delay);
+			code = code.Replace("@GN", gain);
+			code = code.Replace("@GS", gainShift);
+			code = code.Replace("@FB", feedback);
+			code = code.Replace("@FS", feedbackShift);
+			code = code.Replace("@OR", outReg);
+
+			currentLargeBufferInstance += 1;
+			currentWordInstance += 1;
+
+			return code;
+		}
+
+
+		static string Reverb(string output, string[] inputs)
+		{
+			//short cmb_flt_n(BYTE instance, short val, short delay, UBYTE feedback, UBYTE gain)
+			//{
+			//	if (delay > 2047) delay = 2047;
+			//	static short i[16];
+			//	short output = buffern[instance][i[instance]] = add(val, (vol(buffern[instance][i[instance]], feedback)));
+			//  i[instance]++;
+			//  if ( [instance] >= delay)
+			//		i[instance] = 0;
+			//	return vol(output, gain);
+			//}
+
+			/*short reverb(short val, UBYTE feedback, UBYTE gain)
+			{
+				int buf = cmb_flt_n(0, val, 557, feedback, gain);
+				buf += cmb_flt_n(1, val, 593, feedback, gain);
+				buf += cmb_flt_n(2, val, 641, feedback, gain);
+				buf += cmb_flt_n(3, val, 677, feedback, gain);
+				buf += cmb_flt_n(4, val, 709, feedback, gain);
+				buf += cmb_flt_n(5, val, 743, feedback, gain);
+				buf += cmb_flt_n(6, val, 787, feedback, gain);
+				buf += cmb_flt_n(7, val, 809, feedback, gain);
+				return clamp(buf);
+			}*/
+
+			// val = V1-V4
+			// feedback = Immediate or V1-V4
+			// gain = Immediate or V1-V4
+
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+			string val = RemapVarToRegisterOrImmediate(inputs[0]);
+			string feedback = RemapVarToRegisterOrImmediate(inputs[1]);
+			string feedbackShift = mulRightShifts.ContainsKey(feedback) ? mulRightShifts[feedback] : string.Empty;
+			string gain = RemapVarToRegisterOrImmediate(inputs[2]);
+			string gainShift = mulRightShifts.ContainsKey(gain) ? mulRightShifts[gain] : string.Empty;
+
+			int[] ReverbDelayTable = new int[8] { 557, 593, 641, 677, 709, 743, 787, 809 };
+
+			string code = string.Empty;
+
+			code += "				move.l	d7,-(sp)\n";
+			code += "				sub.l	a6,a6\n";
+
+			for (int i = 0; i < 8; i++)
+			{
+
+				//string instance = GetInstanceOffset(i.ToString(), 2);
+				int instanceVal = (currentWordInstance * 2);
+				string instance = instanceVal.ToString();
+
+				//string instance2 = GetInstanceOffset(i.ToString(), 4096);
+				//int instance2Val = int.Parse(instance2);
+				int instance2Val = (currentLargeBufferInstance * 4096);
+				string instance2 = instance2Val.ToString();
+
+				string delay = "#" + ReverbDelayTable[i].ToString();
+
+				if (instance2Val == 0)
+				{
+					code += "				move.l	a1,a4\n";
+				}
+				else if (instance2Val < 32767)
+				{
+					code += "				lea		@IN2(a1),a4\n";
+				}
+				else
+				{
+					code += "				move.l	a1,a4\n";
+					code += "				add.l	#@IN2,a4\n";
+				}
+				code += "				move.w	AK_OpInstance+@IN1(a5),d5\n";
+				code += "				move.w	(a4,d5.w),d4\n";
+
+				if (feedback != "#128")
+				{
+					if (mulRightShifts.ContainsKey(feedback))
+					{
+						code += "				asr.w	@FS,d4\n";
+					}
+					else if (feedback.Contains("#"))
+					{
+						code += "				muls	@FB,d4\n";
+						code += "				asr.l	#7,d4\n";
+					}
+					else
+					{
+						code += "				move.w	@FB,d6\n";
+						code += "				and.w	#255,d6\n";
+						code += "				muls	d6,d4\n";
+						code += "				asr.l	#7,d4\n";
+					}
+				}
+
+				code += "				add.w	@VL,d4\n";
+				code += "				bvc.s	.ReverbAddNoClamp_" + localLabel + "_" + i.ToString() + "\n";
+				code += "				spl		d4\n";
+				code += "				ext.w	d4\n";
+				code += "				eor.w	#$7fff,d4\n";
+				code += ".ReverbAddNoClamp_" + localLabel + "_" + i.ToString() + "\n";
+				code += "				move.w	d4,(a4,d5.w)\n";
+
+				code += "				addq.w	#2,d5\n";
+				code += "				cmp.w	@DL<<1,d5\n";
+				code += "				ble.s	.NoReverbReset_" + localLabel + "_" + i.ToString() + "\n";
+				code += "				moveq	#0,d5\n";
+				code += ".NoReverbReset_" + localLabel + "_" + i.ToString() + "\n";
+				code += "				move.w  d5,AK_OpInstance+@IN1(a5)\n";
+
+				if (gain != "#128")
+				{
+					if (mulRightShifts.ContainsKey(gain))
+					{
+						code += "				move.w	d4,d7\n";
+						code += "				asr.w	@GS,d7\n";
+					}
+					else if (gain.Contains("#"))
+					{
+						code += "				move.w	d4,d7\n";
+						code += "				muls	@GN,d7\n";
+						code += "				asr.l	#7,d7\n";
+					}
+					else
+					{
+						code += "				move.w	@GN,d5\n";
+						code += "				and.w	#255,d5\n";
+						code += "				move.w	d4,d7\n";
+						code += "				muls	d5,d7\n";
+						code += "				asr.l	#7,d7\n";
+					}
+					code += "				add.w	d7,a6\n";
+				}
+				else
+				{
+					code += "				add.w	d4,a6\n";
+				}
+
+				code = code.Replace("@IN1", instance);
+				code = code.Replace("@IN2", instance2);
+				code = code.Replace("@VL", val);
+				code = code.Replace("@DL", delay);
+				code = code.Replace("@GN", gain);
+				code = code.Replace("@GS", gainShift);
+				code = code.Replace("@FB", feedback);
+				code = code.Replace("@FS", feedbackShift);
+				code = code.Replace("@OR", outReg);
+
+				currentLargeBufferInstance += 1;
+				currentWordInstance += 1;
+			}
+
+			code += "				move.l	a6,d7\n";
+			code += "				cmp.l	#32767,d7\n";
+			code += "				ble.s	.NoReverbMax_" + localLabel + "\n";
+			code += "				move.w	#32767,d7\n";
+			code += "				bra.s	.NoReverbMin_" + localLabel + "\n";
+			code += ".NoReverbMax_" + localLabel + "\n";
+			code += "				cmp.l	#-32768,d7\n";
+			code += "				bge.s	.NoReverbMin_" + localLabel + "\n";
+			code += "				move.w	#-32768,d7\n";
+			code += ".NoReverbMin_" + localLabel + "\n";
+			code += "				move.w	d7,@OR\n";
+			code += "				move.l	(sp)+,d7\n";
+
+			code = code.Replace("@OR", outReg);
+			return code;
+		}
+
+		static string SVFilter(string output, string[] inputs)
+		{
+			//short sv_flt_n(BYTE instance, short val, short cutoff, UBYTE resonance, BYTE mode)
+			//{
+			//	short* buffer = filterBuffer + (instance << 2);
+			//	short lpf = buffer[0]; short hpf = buffer[1]; short bpf = buffer[2];
+			//	lpf = clamp(lpf + (mulsw(bpf >> 7, cutoff)));
+			//	hpf = clamp(val - lpf - (mulsw(bpf >> 7, resonance)));
+			//	bpf = clamp(bpf + (mulsw(hpf >> 7, cutoff)));
+			//	buffer[0] = lpf; buffer[1] = hpf; buffer[2] = bpf;
+			//	switch (mode)
+			//	{
+			//		case 0: return lpf; break;
+			//		case 1: return hpf; break;
+			//		case 2: return bpf; break;
+			//		case 3: return clamp(hpf + hpf); break;
+			//	}
+			//	return 0;
+			//}
+
+			// instance = 0-15
+			// val = V1-V4
+			// cutoff = Immediate or V1-V4
+			// resonance = Immediate or V1-V4
+			// mode = Immediate (chooses return code path)
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+
+			//string instance = GetInstanceOffset(inputs[0], 8);
+			int instanceVal = (currentWordInstance * 2);
+			string instance = instanceVal.ToString();
+
+			string val = RemapVarToRegisterOrImmediate(inputs[1]);
+			string cutoff = RemapVarToRegisterOrImmediate(inputs[2]);
+			string cutoffShift = mulLeftShifts.ContainsKey(cutoff) ? mulLeftShifts[cutoff] : string.Empty;
+			string resonance = RemapVarToRegisterOrImmediate(inputs[3]);
+			string resonanceShift = mulLeftShifts.ContainsKey(resonance) ? mulLeftShifts[resonance] : string.Empty;
+			string mode = inputs[4];
+
+			string code = string.Empty;
+
+			//////////////////////////
+			//code += "				; LPF STAGE: lpf = clamp(lpf + (mulsw(bpf>>7, cutoff)))\n";
+			code += "				move.w	AK_OpInstance+AK_BPF+@IN(a5),d5\n";
+			code += "				asr.w	#7,d5\n";
+			code += "				move.w	d5,d6\n";
+
+			if (mulLeftShifts.ContainsKey(cutoff))
+			{
+				code += "				asl.w	@CS,d5\n";
+			}
+			else if (cutoff.Contains("#"))
+			{
+				code += "				muls	@CO,d5\n";
+			}
+			else
+			{
+				code += "				muls	@CO,d5\n";
+			}
+			code += "				move.w	AK_OpInstance+AK_LPF+@IN(a5),d4\n";
+			code += "				add.w	d5,d4\n";
+			code += "				bvc.s	.NoClampLPF_" + localLabel + "\n";
+			code += "				spl		d4\n";
+			code += "				ext.w	d4\n";
+			code += "				eor.w	#$7fff,d4\n";
+			code += ".NoClampLPF_" + localLabel + "\n";
+			code += "				move.w	d4,AK_OpInstance+AK_LPF+@IN(a5)\n";
+
+			//////////////////////////
+			//code += "				; HPF STAGE: hpf = clamp(val - lpf - (mulsw(bpf>>7, resonance)));\n";
+			if (mulLeftShifts.ContainsKey(resonance))
+			{
+				code += "				asl.w	@RS,d6\n";
+				code += "				ext.l	d6\n";
+			}
+			else if (resonance.Contains("#"))
+			{
+				code += "				muls	@RE,d6\n";
+			}
+			else
+			{
+				code += "				move.w	@RE,d5\n";
+				code += "				and.w	#255,d5\n";
+				code += "				muls	d5,d6\n";
+			}
+			code += "				move.w	@VL,d5\n";
+			code += "				ext.l	d5\n";
+			code += "				ext.l	d4\n";
+			code += "				sub.l	d4,d5\n";
+			code += "				sub.l	d6,d5\n";
+			code += "				cmp.l	#32767,d5\n";
+			code += "				ble.s	.NoClampMaxHPF_" + localLabel + "\n";
+			code += "				move.w	#32767,d5\n";
+			code += "				bra.s	.NoClampMinHPF_" + localLabel + "\n";
+			code += ".NoClampMaxHPF_" + localLabel + "\n";
+			code += "				cmp.l	#-32768,d5\n";
+			code += "				bge.s	.NoClampMinHPF_" + localLabel + "\n";
+			code += "				move.w	#-32768,d5\n";
+			code += ".NoClampMinHPF_" + localLabel + "\n";
+			code += "				move.w	d5,AK_OpInstance+AK_HPF+@IN(a5)\n";
+
+			//////////////////////////
+			//code += "				; BPF STAGE: bpf = clamp(bpf + (mulsw(hpf>>7, cutoff)))\n";
+
+			code += "				asr.w	#7,d5\n";
+			if (mulLeftShifts.ContainsKey(cutoff))
+			{
+				code += "				asl.w	@CS,d5\n";
+			}
+			else if (cutoff.Contains("#"))
+			{
+				code += "				muls	@CO,d5\n";
+			}
+			else
+			{
+				code += "				muls	@CO,d5\n";
+			}
+
+			code += "				add.w	AK_OpInstance+AK_BPF+@IN(a5),d5\n";
+			code += "				bvc.s	.NoClampBPF_" + localLabel + "\n";
+			code += "				spl		d5\n";
+			code += "				ext.w	d5\n";
+			code += "				eor.w	#$7fff,d5\n";
+			code += ".NoClampBPF_" + localLabel + "\n";
+			code += "				move.w	d5,AK_OpInstance+AK_BPF+@IN(a5)\n";
+
+
+			if (mode == "0")
+			{
+				code += "				move.w	AK_OpInstance+AK_LPF+@IN(a5),@OR\n";
+			}
+			else if (mode == "1")
+			{
+				code += "				move.w	AK_OpInstance+AK_HPF+@IN(a5),@OR\n";
+			}
+			else if (mode == "2")
+			{
+				code += "				move.w	d5,@OR\n";
+			}
+			else if (mode == "3")
+			{
+				code += "				move.w	AK_OpInstance+AK_HPF+@IN(a5),@OR\n";
+				code += "				add.w	@OR,@OR\n";
+				code += "				bvc.s	.NoClampMode3_" + localLabel + "\n";
+				code += "				spl		@OR\n";
+				code += "				ext.w	@OR\n";
+				code += "				eor.w	#$7fff,@OR\n";
+				code += ".NoClampMode3_" + localLabel + "\n";
+			}
+
+			code = code.Replace("@IN", instance);
+			code = code.Replace("@VL", val);
+			code = code.Replace("@CO", cutoff);
+			code = code.Replace("@CS", cutoffShift);
+			code = code.Replace("@RE", resonance);
+			code = code.Replace("@RS", resonanceShift);
+			code = code.Replace("@OR", outReg);
+
+			currentWordInstance += 3;
+
+			return code;
+		}
+
+		static string OnePoleFilter(string output, string[] inputs)
+		{
+			//short onepole_flt(BYTE instance, short val, BYTE cutoff, BYTE mode)
+			//{
+			//	short* buffer = filterBuffer + (instance << 2);
+			//	short pole = buffer[3];
+			//	pole = clamp(pole - (mulsw(pole >> 7, cutoff)) + (mulsw(val >> 7, cutoff)));
+			//	buffer[3] = pole;
+			//	switch (mode)
+			//	{
+			//		case 0: return pole; break;
+			//		case 1: return (val - pole); break;
+			//	}
+			//	return 0;
+			//}
+
+			// instance = 0-15
+			// val = V1-V4
+			// cutoff = Immediate or V1-V4
+			// mode = Immediate (chooses return code path)
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+
+			int instanceVal = (currentWordInstance * 2);
+			string instance = instanceVal.ToString();
+
+			string val = RemapVarToRegisterOrImmediate(inputs[1]);
+			string cutoff = RemapVarToRegisterOrImmediate(inputs[2]);
+			string cutoffShift = mulLeftShifts.ContainsKey(cutoff) ? mulLeftShifts[cutoff] : string.Empty;
+			string mode = inputs[3];
+
+			string code = string.Empty;
+
+			//////////////////////////
+			code += "				move.w	AK_OpInstance+@IN(a5),d5\n";
+			code += "				move.w	d5,d6\n";
+			code += "				ext.l	d6\n";
+			code += "				asr.w	#7,d5\n";
+
+			if (mulLeftShifts.ContainsKey(cutoff))
+			{
+				code += "				asl.w	@CS,d5\n";
+				code += "				ext.l	d5\n";
+			}
+			else if (cutoff.Contains("#"))
+			{
+				code += "				muls	@CO,d5\n";
+			}
+			else
+			{
+				code += "				move.w	@CO,d4\n";
+				code += "				and.w	#255,d4\n";
+				code += "				muls	d4,d5\n";
+			}
+
+			code += "				sub.l	d5,d6\n";
+
+			code += "				move.w	@VL,d5\n";
+			code += "				asr.w	#7,d5\n";
+
+			if (mulLeftShifts.ContainsKey(cutoff))
+			{
+				code += "				asl.w	@CS,d5\n";
+				code += "				ext.l	d5\n";
+			}
+			else if (cutoff.Contains("#"))
+			{
+				code += "				muls	@CO,d5\n";
+			}
+			else
+			{
+				code += "				move.w	@CO,d4\n";
+				code += "				and.w	#255,d4\n";
+				code += "				muls	d4,d5\n";
+			}
+
+			code += "				add.l	d6,d5\n";
+
+
+			code += "				cmp.l	#32767,d5\n";
+			code += "				ble.s	.NoClampMaxOPF_" + localLabel + "\n";
+			code += "				move.w	#32767,d5\n";
+			code += "				bra.s	.NoClampMinOPF_" + localLabel + "\n";
+			code += ".NoClampMaxOPF_" + localLabel + "\n";
+			code += "				cmp.l	#-32768,d5\n";
+			code += "				bge.s	.NoClampMinOPF_" + localLabel + "\n";
+			code += "				move.w	#-32768,d5\n";
+			code += ".NoClampMinOPF_" + localLabel + "\n";
+			code += "				move.w	d5,AK_OpInstance+@IN(a5)\n";
+
+			if (mode == "0")
+			{
+				code += "				move.w	d5,@OR\n";
+			}
+			else if (mode == "1")
+			{
+				if (val != outReg)
+				{
+					code += "				move.w	@VL,@OR\n";
+				}
+				code += "				sub.w	d5,@OR\n";
+
+				code += "				bvc.s	.NoClampOPFMode1_" + localLabel + "\n";
+				code += "				spl		@OR\n";
+				code += "				ext.w	@OR\n";
+				code += "				eor.w	#$7fff,@OR\n";
+				code += ".NoClampOPFMode1_" + localLabel + "\n";
+
+			}
+
+			code = code.Replace("@IN", instance);
+			code = code.Replace("@VL", val);
+			code = code.Replace("@CO", cutoff);
+			code = code.Replace("@CS", cutoffShift);
+			code = code.Replace("@OR", outReg);
+
+			currentWordInstance += 1;
+
+			return code;
+		}
+
+		static string Distortion(string output, string[] inputs)
+		{
+			//short distortion(int val, UBYTE gain)
+			//{
+			//	int temp;
+			//	short res;
+			//	val = clamp((val * gain) >> 5);
+			//  val >>= 1;
+			//	temp = mulsw(val, 32767 - abs(val));
+			//	res = temp >> 16;
+			//	res <<= 3;
+			//	return res;
+			//}
+
+			// val = v1-v4
+			// gain = Immediate or V1-v4
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+			string val = RemapVarToRegisterOrImmediate(inputs[0]);
+			string gain = RemapVarToRegisterOrImmediate(inputs[1]);
+			string gainShift = mulLeftShifts.ContainsKey(gain) ? mulLeftShifts[gain] : string.Empty;
+
+			string code = string.Empty;
+
+			code += "				move.w	@VL,d5\n";
+			if (!gain.Contains("#"))
+			{
+				code += "				move.w	@GN,d4\n";
+				code += "				and.w	#255,d4\n";
+				code += "				muls	d4,d5\n";
+				code += "				asr.l	#5,d5\n";
+			}
+			else
+			{
+				if (mulLeftShifts.ContainsKey(gain))
+				{
+					code += "				ext.l	d5\n";
+					code += "				asl.l	@GS,d5\n";
+					code += "				asr.l	#5,d5\n";
+				}
+				else
+				{
+					code += "				muls	@GN,d5\n";
+					code += "				asr.l	#5,d5\n";
+				}
+			}
+
+			code += "				cmp.l	#32767,d5\n";
+			code += "				ble.s	.NoClampMaxDist_" + localLabel + "\n";
+			code += "				move.w	#32767,d5\n";
+			code += "				bra.s	.NoClampMinDist_" + localLabel + "\n";
+			code += ".NoClampMaxDist_" + localLabel + "\n";
+			code += "				cmp.l	#-32768,d5\n";
+			code += "				bge.s	.NoClampMinDist_" + localLabel + "\n";
+			code += "				move.w	#-32768,d5\n";
+			code += ".NoClampMinDist_" + localLabel + "\n";
+			code += "				asr.w	#1,d5\n";
+			code += "				move.w	d5,@OR\n";
+			code += "				bge.s	.DistNoAbs_" + localLabel + "\n";
+			code += "				neg.w	d5\n";
+			code += ".DistNoAbs_" + localLabel + "\n";
+			code += "				move.w	#32767,d6\n";
+			code += "				sub.w	d5,d6\n";
+			code += "				muls	d6,@OR\n";
+			code += "				swap	@OR\n";
+			code += "				asl.w	#3,@OR\n";
+
+			code = code.Replace("@VL", val);
+			code = code.Replace("@GN", gain);
+			code = code.Replace("@GS", gainShift);
+			code = code.Replace("@OR", outReg);
+
+			return code;
+		}
+
+		static string ADSR(string output, string[] inputs)
+		{
+			//short adsr(BYTE instance, int attackAmount, int decayAmount, int sustainLevel, int sustainLength, int releaseAmount, int peak)
+			//{
+			//	int val = ADSR_Value[instance];
+			//	switch (ADSR_Mode[instance])
+			//	{
+			//		case 0:         // Attack
+			//			val += attackAmount; if (val >= peak) { val = peak; ADSR_Mode[instance] = 1; }
+			//			break;
+			//		case 1:         // Decay
+			//			val -= decayAmount; if (val <= sustainLevel) { val = sustainLevel; ADSR_Mode[instance] = 2; }
+			//			break;
+			//		case 2:         // Sustain
+			//			ADSR_SustainCounter[instance]++; if (ADSR_SustainCounter[instance] > sustainLength) { ADSR_Mode[instance] = 3; }
+			//			break;
+			//		case 3:        // Release
+			//			val -= releaseAmount; if (val < 0) { val = 0; }
+			//			break;
+			//	}
+			//	ADSR_Value[instance] = val;
+			//	return val >> 8;
+			//}
+
+			int instanceVal = (currentWordInstance * 2);
+			string instance1 = instanceVal.ToString();
+			string instance2 = (instanceVal + 4).ToString();
+			string instance3 = (instanceVal + 6).ToString();
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+			string attackAmount = RemapVarToRegisterOrImmediate(inputs[1]);
+			string decayAmount = RemapVarToRegisterOrImmediate(inputs[2]);
+			string sustainLevel = RemapVarToRegisterOrImmediate(inputs[3]);
+			string sustainLength = RemapVarToRegisterOrImmediate(inputs[4]);
+			string releaseAmount = RemapVarToRegisterOrImmediate(inputs[5]);
+			string peakValue = RemapVarToRegisterOrImmediate(inputs[6]);
+
+			string code = string.Empty;
+
+			code += "				move.l	AK_OpInstance+@IN1(a5),@OR\n";
+			code += "				move.w	AK_OpInstance+@IN2(a5),d4\n";
+			code += "				beq.s	.ADSR_A_" + localLabel + "\n";
+			code += "				subq.w	#1,d4\n";
+			code += "				beq.s	.ADSR_D_" + localLabel + "\n";
+			code += "				subq.w	#1,d4\n";
+			code += "				beq.s	.ADSR_S_" + localLabel + "\n";
+			code += ".ADSR_R_" + localLabel + "\n";
+			code += "				sub.l	@RA,@OR\n";
+			code += "				bge.s	.ADSR_End_" + localLabel + "\n";
+			code += "				moveq	#0,@OR\n";
+			code += "				bra.s	.ADSR_End_" + localLabel + "\n";
+			code += ".ADSR_A_" + localLabel + "\n";
+			code += "				add.l	@AA,@OR\n";
+			code += "				cmp.l	@PV,@OR\n";
+			code += "				blt.s	.ADSR_End_" + localLabel + "\n";
+			code += "				move.l	@PV,@OR\n";
+			code += "				move.w	#1,AK_OpInstance+@IN2(a5)\n";
+			code += "				bra.s	.ADSR_End_" + localLabel + "\n";
+			code += ".ADSR_D_" + localLabel + "\n";
+			code += "				sub.l	@DA,@OR\n";
+			code += "				cmp.l	@SLEV,@OR\n";
+			code += "				bgt.s	.ADSR_End_" + localLabel + "\n";
+			code += "				move.l	@SLEV,@OR\n";
+			code += "				move.l	@SLEN,AK_OpInstance+@IN3(a5)\n";
+			code += "				move.w	#2,AK_OpInstance+@IN2(a5)\n";
+			code += "				bra.s	.ADSR_End_" + localLabel + "\n";
+			code += ".ADSR_S_" + localLabel + "\n";
+			code += "				subq.l	#1,AK_OpInstance+@IN3(a5)\n";
+			code += "				bge.s	.ADSR_End_" + localLabel + "\n";
+			code += "				move.w	#3,AK_OpInstance+@IN2(a5)\n";
+			code += ".ADSR_End_" + localLabel + "\n";
+			code += "				move.l	@OR,AK_OpInstance+@IN1(a5)\n";
+			code += "				asr.l	#8,@OR\n";
+
+			code = code.Replace("@IN1", instance1);
+			code = code.Replace("@IN2", instance2);
+			code = code.Replace("@IN3", instance3);
+			code = code.Replace("@AA", attackAmount);
+			code = code.Replace("@DA", decayAmount);
+			code = code.Replace("@SLEV", sustainLevel);
+			code = code.Replace("@SLEN", sustainLength);
+			code = code.Replace("@RA", releaseAmount);
+			code = code.Replace("@PV", peakValue);
+			code = code.Replace("@OR", outReg);
+
+			currentWordInstance += 5;
+
+			return code;
+		}
+
+
+
+		static string ChordGen(string output, string[] inputs)
+		{
+			//short chordgen(int sample, int instrument, BYTE n1, BYTE n2, BYTE n3, UBYTE shift)
+			//{
+			//	int buf = *(BYTE*)(BaseAdr + sample) << 7;
+			//	if (n1 == 1 || n2 == 1 || n3 == 1) buf += *(BYTE*)(shift + BaseAdr + ((mulsw(sample, 271)) >> 8)) << 7;
+			//	if (n1 == 2 || n2 == 2 || n3 == 2) buf += *(BYTE*)(shift + BaseAdr + ((mulsw(sample, 287)) >> 8)) << 7;
+			//	if (n1 == 3 || n2 == 3 || n3 == 3) buf += *(BYTE*)(shift + BaseAdr + ((mulsw(sample, 304)) >> 8)) << 7;
+			//	if (n1 == 4 || n2 == 4 || n3 == 4) buf += *(BYTE*)(shift + BaseAdr + ((mulsw(sample, 322)) >> 8)) << 7;
+			//	if (n1 == 5 || n2 == 5 || n3 == 5) buf += *(BYTE*)(shift + BaseAdr + ((mulsw(sample, 342)) >> 8)) << 7;
+			//	if (n1 == 6 || n2 == 6 || n3 == 6) buf += *(BYTE*)(shift + BaseAdr + ((mulsw(sample, 362)) >> 8)) << 7;
+			//	if (n1 == 7 || n2 == 7 || n3 == 7) buf += *(BYTE*)(shift + BaseAdr + ((mulsw(sample, 383)) >> 8)) << 7;
+			//	if (n1 == 8 || n2 == 8 || n3 == 8) buf += *(BYTE*)(shift + BaseAdr + ((mulsw(sample, 203)) >> 7)) << 7;
+			//	if (n1 == 9 || n2 == 9 || n3 == 9) buf += *(BYTE*)(shift + BaseAdr + ((mulsw(sample, 215)) >> 7)) << 7;
+			//	if (n1 == 10 || n2 == 10 || n3 == 10) buf += *(BYTE*)(shift + BaseAdr + ((mulsw(sample, 228)) >> 7)) << 7;
+			//	if (n1 == 11 || n2 == 11 || n3 == 11) buf += *(BYTE*)(shift + BaseAdr + ((mulsw(sample, 483)) >> 8)) << 7;
+			//	if (n1 == 12 || n2 == 12 || n3 == 12) buf += *(BYTE*)(shift + BaseAdr + (sample << 1)) << 7;
+			//	return clamp(buf);
+			//}
+
+
+			// instance = immediate 0-15
+			// instrument = Immediate 0-31
+			// note1 = Immediate 0-12
+			// note2 = Immediate 0-12
+			// note3 = Immediate 0-12
+			// shift = Immediate or V1-V4
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+
+			//string instance = GetInstanceOffset(inputs[0], 4);
+			int instanceVal = (currentWordInstance * 2);
+			string instance = instanceVal.ToString();
+
+			string basesample = GetInstanceOffset(inputs[1], 4);
+			string note1 = GetChordValue(int.Parse(inputs[2]));
+			string note2 = GetChordValue(int.Parse(inputs[3]));
+			string note3 = GetChordValue(int.Parse(inputs[4]));
+			string shift = RemapVarToRegisterOrImmediate(inputs[5]);
+			int shiftInt = shift.Contains("#") ? int.Parse(inputs[5]) : 0;
+
+			string code = string.Empty;
+
+			code += "				move.l	AK_SmpAddr+@BS(a5),a4\n";
+			code += "				move.b	(a4,d7.l),d6\n";
+			//code += "				ext.w	d6\n";
+			//code += "				ext.l	d6\n";
+			//code += "				asl.l	#7,d6\n";
+			code += "				ext.w	d6\n";
+
+			if (!shift.Contains("#"))
+			{
+				code += "				move.w	@SH,d4\n";
+				code += "				and.w	#255,d4\n";
+				code += "				add.w	d4,a4\n";
+			}
+			else
+			{
+				if (shiftInt != 0)
+				{
+					if (shiftInt <= 8)
+						code += "				addq.w	@SH,a4\n";
+					else
+						code += "				add.w	@SH,a4\n";
+				}
+			}
+
+			code += "				moveq	#0,d4\n";
+
+			if (note1 != "#0")
+			{
+				code += "				move.w	AK_OpInstance+AK_CHORD1+@IN(a5),d4\n";
+				code += "				add.l	@N1,AK_OpInstance+AK_CHORD1+@IN(a5)\n";
+				code += "				move.b	(a4,d4.l),d5\n";
+				code += "				ext.w	d5\n";
+				//code += "				ext.l	d5\n";
+				//code += "				asl.l	#7,d5\n";
+				//code += "				add.l	d5,d6\n";
+				code += "				add.w	d5,d6\n";
+			}
+			if (note2 != "#0" && note2 != note1)
+			{
+				code += "				move.w	AK_OpInstance+AK_CHORD2+@IN(a5),d4\n";
+				code += "				add.l	@N2,AK_OpInstance+AK_CHORD2+@IN(a5)\n";
+				code += "				move.b	(a4,d4.l),d5\n";
+				code += "				ext.w	d5\n";
+				//code += "				ext.l	d5\n";
+				//code += "				asl.l	#7,d5\n";
+				//code += "				add.l	d5,d6\n";
+				code += "				add.w	d5,d6\n";
+			}
+			if (note3 != "#0" && note3 != note1 && note3 != note2)
+			{
+				code += "				move.w	AK_OpInstance+AK_CHORD3+@IN(a5),d4\n";
+				code += "				add.l	@N3,AK_OpInstance+AK_CHORD3+@IN(a5)\n";
+				code += "				move.b	(a4,d4.l),d5\n";
+				code += "				ext.w	d5\n";
+				//code += "				ext.l	d5\n";
+				//code += "				asl.l	#7,d5\n";
+				//code += "				add.l	d5,d6\n";
+				code += "				add.w	d5,d6\n";
+			}
+
+			/*code += "				cmp.l	#32767,d6\n";
+			code += "				blt.s	.NoClampMaxChord_" + localLabel + "\n";
+			code += "				move.l	#32767,d6\n";
+			code += "				bra.s	.NoClampMinChord_" + localLabel + "\n";
+			code += ".NoClampMaxChord_" + localLabel + "\n";
+			code += "				cmp.l	#-32768,d6\n";
+			code += "				bge.s	.NoClampMinChord_" + localLabel + "\n";
+			code += "				move.l	#-32768,d6\n";
+			code += ".NoClampMinChord_" + localLabel + "\n";*/
+
+			/*code += "				asl.w	#7,d6\n";
+			code += "				bvc.s	.NoClampChord_" + localLabel + "\n";
+			code += "				spl		d6\n";
+			code += "				ext.w	d6\n";
+			code += "				eor.w	#$7fff,d6\n";
+			code += ".NoClampChord_" + localLabel + "\n";*/
+
+			code += "				move.w	#255,d5\n";
+			code += "				cmp.w	d5,d6\n";
+			code += "				blt.s	.NoClampMaxChord_" + localLabel + "\n";
+			code += "				move.w	d5,d6\n";
+			code += "				bra.s	.NoClampMinChord_" + localLabel + "\n";
+			code += ".NoClampMaxChord_" + localLabel + "\n";
+			code += "				not.w	d5\n";
+			code += "				cmp.w	d5,d6\n";
+			code += "				bge.s	.NoClampMinChord_" + localLabel + "\n";
+			code += "				move.w	d5,d6\n";
+			code += ".NoClampMinChord_" + localLabel + "\n";
+
+			code += "				asl.w	#7,d6\n";
+			code += "				move.w	d6,@OR\n";
+
+
+			code = code.Replace("@OR", outReg);
+			code = code.Replace("@IN", instance);
+			code = code.Replace("@BS", basesample);
+			code = code.Replace("@SH", shift);
+			code = code.Replace("@N1", note1);
+			code = code.Replace("@N2", note2);
+			code = code.Replace("@N3", note3);
+
+			currentWordInstance += 6;
+
+			return code;
+		}
+
+		static string Clone(string output, string[] inputs)
+		{
+			//short clone(int smp, int instrument, int offset)
+			//{
+			//	BYTE val = (smp + offset) < SmpLength[instrument] ? *(BYTE*)(BaseAdr[instrument] + smp + offset) : 0;
+			//	return val<<8;
+			//}
+
+			// sample = d7
+			// instrument = Immediate 0-31
+			// offset = immediate
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+			string basesample = GetInstanceOffset(inputs[1], 4);
+			string offset = RemapVarToRegisterOrImmediate(inputs[2]);
+			int offsetInt = offset.Contains("#") ? int.Parse(inputs[2]) : 0;
+
+			string code = string.Empty;
+
+			if (offsetInt > 0)
+			{
+				code += "				move.l	d7,d6\n";
+				if (offsetInt <= 8)
+					code += "				addq.l	@OS,d6\n";
+				else
+					code += "				add.l	@OS,d6\n";
+			}
+			code += "				moveq	#0,@OR\n";
+			if (offsetInt > 0)
+				code += "				cmp.l	AK_SmpLen+@BS(a5),d6\n";
+			else
+				code += "				cmp.l	AK_SmpLen+@BS(a5),d7\n";
+			code += "				bge.s	.NoClone_" + localLabel + "\n";
+			code += "				move.l	AK_SmpAddr+@BS(a5),a4\n";
+			if (offsetInt > 0)
+				code += "				move.b	(a4,d6.l),@OR\n";
+			else
+				code += "				move.b	(a4,d7.l),@OR\n";
+			code += "				asl.w	#8,@OR\n";
+			code += ".NoClone_" + localLabel + "\n";
+
+			code = code.Replace("@OR", outReg);
+			code = code.Replace("@BS", basesample);
+			code = code.Replace("@OS", offset);
+
+			return code;
+		}
+
+		static string CloneReverse(string output, string[] inputs)
+		{
+			//short clone(int smp, int instrument, int offset)
+			//{
+			//	BYTE val = (smp + offset) < SmpLength[instrument] ? *(BYTE*)(BaseAdr[instrument+1] - (smp + offset)) : 0;
+			//	return val<<8;
+			//}
+
+			// sample = d7
+			// instrument = Immediate 0-31
+			// offset = immediate
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+			string basesample = GetInstanceOffset(inputs[1], 4);
+			string offset = RemapVarToRegisterOrImmediate(inputs[2]);
+			int offsetInt = offset.Contains("#") ? int.Parse(inputs[2]) : 0;
+
+			string code = string.Empty;
+
+			code += "				move.l	d7,d6\n";
+			if (offsetInt > 0)
+			{
+				if (offsetInt <= 8)
+					code += "				addq.l	@OS,d6\n";
+				else
+					code += "				add.l	@OS,d6\n";
+			}
+			code += "				moveq	#0,@OR\n";
+			code += "				cmp.l	AK_SmpLen+@BS(a5),d6\n";
+			code += "				bge.s	.NoCloneR_" + localLabel + "\n";
+			code += "				move.l	AK_SmpAddr+@BS+4(a5),a4\n";
+			code += "				neg.l	d6\n";
+			code += "				move.b	-1(a4,d6.l),@OR\n";
+			code += "				asl.w	#8,@OR\n";
+			code += ".NoCloneR_" + localLabel + "\n";
+
+			code = code.Replace("@OR", outReg);
+			code = code.Replace("@BS", basesample);
+			code = code.Replace("@OS", offset);
+
+			return code;
+		}
+
+		static string ImportedSample(string output, string[] inputs)
+		{
+			//short clone(int smp, int instrument)
+			//{
+			//	BYTE val = (smp < SmpLength[instrument] ) ? *(BYTE*)(ImpBaseAdr[instrument] + smp) : 0;
+			//	return val<<8;
+			//}
+
+			// sample = d7
+			// basesample = Immediate 0-7
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+			string basesample = GetInstanceOffset(inputs[1], 4);
+
+			string code = string.Empty;
+
+			code += "				moveq	#0,@OR\n";
+			code += "				cmp.l	AK_ExtSmpLen+@BS(a5),d7\n";
+			code += "				bge.s	.NoCloneIS_" + localLabel + "\n";
+			code += "				move.l	AK_ExtSmpAddr+@BS(a5),a4\n";
+			code += "				move.b	(a4,d7.l),@OR\n";
+			code += "				asl.w	#8,@OR\n";
+			code += ".NoCloneIS_" + localLabel + "\n";
+
+			code = code.Replace("@OR", outReg);
+			code = code.Replace("@BS", basesample);
+
+			return code;
+		}
+
+		static string LoopGenerator(string repeat_length, string repeat_offset, string instrument)
+		{
+			//void loopgen(WORD repeat_length, WORD repeat_offset, void* BaseAdr)
+			//{
+			//	int smp;
+			//	BYTE* src1 = BaseAdr + repeat_offset;
+			//	BYTE* src2 = BaseAdr + repeat_offset - repeat_length;
+			//	int delta = divsw((32767 << 8), repeat_length);
+			//	int rampup = 0;
+			//	int rampdown = 32767 << 8;
+			//	for (smp = 0; smp < repeat_length; smp++)
+			//	{
+			//		short a = (rampup >> 8);
+			//		short b = (rampdown >> 8);
+			//		BYTE s1 = src1[smp];
+			//		BYTE s2 = src2[smp];
+			//		BYTE blend = (mulsw(s1, b) + mulsw(s2, a)) >> 15;
+			//		src1[smp] = blend;
+			//		rampup += delta;
+			//		rampdown -= delta;
+			//	}
+			//}
+
+			string instr = GetInstanceOffset(instrument, 4);		
+
+			int repLenInt = int.Parse(repeat_length);
+			int repOffInt = int.Parse(repeat_offset);
+
+			fineProgressLength += repLenInt;
+
+			string code = string.Empty;
+
+			code += "				move.l	#@RL,d7\n";
+			code += "				move.l	AK_SmpAddr+@IN(a5),a0\n";
+			if (repOffInt < 32768)
+				code += "				lea		@RO(a0),a0\n";
+			else
+				code += "				add.l	#@RO,a0\n";
+			code += "				move.l	a0,a1\n";
+			code += "				sub.l	d7,a1\n";
+			code += "				moveq	#0,d4\n";
+			code += "				move.l	#32767<<8,d5\n";
+			code += "				move.l	d5,d0\n";
+			code += "				divs	d7,d0\n";
+			code += "				bvc.s	.LoopGenVC_" + instrument + "\n";
+			code += "				moveq	#0,d0\n";
+			code += ".LoopGenVC_" + instrument + "\n";
+			code += "				moveq	#0,d6\n";
+			code += "				move.w	d0,d6\n";
+			code += ".LoopGen_" + instrument + "\n";
+			code += "				move.l	d4,d2\n";
+			code += "				asr.l	#8,d2\n";
+			code += "				move.l	d5,d3\n";
+			code += "				asr.l	#8,d3\n";
+			code += "				move.b	(a0),d0\n";
+			code += "				move.b	(a1)+,d1\n";
+			code += "				ext.w	d0\n";
+			code += "				ext.w	d1\n";
+			code += "				muls	d3,d0\n";
+			code += "				muls	d2,d1\n";
+			code += "				add.l	d1,d0\n";
+			code += "				add.l	d0,d0\n";
+			code += "				swap	d0\n";
+			code += "				move.b	d0,(a0)+\n";
+			code += "				add.l	d6,d4\n";
+			code += "				sub.l	d6,d5\n";
+			code += "\n";
+			code += "				ifne	AK_USE_PROGRESS\n";
+			code += "					ifne	AK_FINE_PROGRESS\n";
+			code += "						addq.l	#1,(a3)\n";
+			code += "					endif\n";
+			code += "				endif\n";
+			code += "\n";
+			code += "				subq.l	#1,d7\n";
+			code += "				bne.s	.LoopGen_" + instrument + "\n";
+
+			code = code.Replace("@IN", instr);
+			code = code.Replace("@RO", repeat_offset);
+			code = code.Replace("@RL", repeat_length);
+
+			return code;
+		}
+
+
+
+		static string GetInstanceOffset(string value, int offsetSize)
+		{
+			int instance = 0;
+			if (int.TryParse(value, out instance))
+			{
+				return (instance * offsetSize).ToString();
+			}
+			return "0";
+		}
+
+		static string RemapVarToRegisterOrImmediate(string value)
+		{
+			if (value == "v1")
+				return "d0";
+			else if (value == "v2")
+				return "d1";
+			else if (value == "v3")
+				return "d2";
+			else if (value == "v4")
+				return "d3";
+			else if (value == "smp")
+				return "d7";
+
+			return "#" + value;
+		}
+
+		static string GetDecayValue(int index)
+		{
+			int[] decayTable = {    32767, 32767, 32767, 16384, 10922, 8192, 6553, 4681,
+									3640, 2978, 2520, 2048, 1724, 1489, 1310, 1129,
+									992, 885, 799, 712, 642, 585, 537, 489,
+									448, 414, 385, 356, 330, 309, 289, 270,
+									254, 239, 225, 212, 201, 190, 181, 171,
+									163, 155, 148, 141, 134, 129, 123, 118,
+									113, 108, 104, 100, 96, 93, 89, 86,
+									83, 80, 77, 75, 72, 70, 68, 65,
+									63, 61, 60, 58, 56, 54, 53, 51,
+									50, 49, 47, 46, 45, 44, 43, 41,
+									40, 39, 38, 38, 37, 36, 35, 34,
+									33, 33, 32, 31, 30, 30, 29, 29,
+									28, 27, 27, 26, 26, 25, 25, 24,
+									24, 23, 23, 22, 22, 22, 21, 21,
+									20, 20, 20, 19, 19, 19, 18, 18,
+									18, 17, 17, 17, 17, 16, 16, 16 };
+
+			int decayValue = decayTable[index] << 8;
+			return "#" + decayValue.ToString();
+		}
+
+		static string GetChordValue(int index)
+		{
+			int[] chordTable = { 0 << 8, 271 << 8, 287 << 8, 304 << 8, 322 << 8, 342 << 8,
+								 362 << 8, 383 << 8, 406 << 8, 430 << 8, 456 << 8, 483 << 8, 512 << 8 };
+
+			int chordValue = chordTable[index];
+			return "#" + chordValue.ToString();
+		}
+
+		static string VarsCode()
+		{
+			string code = string.Empty;
+
+			code += "				rsreset\n";
+			code += "AK_LPF			rs.w	1\n";
+			code += "AK_HPF			rs.w	1\n";
+			code += "AK_BPF			rs.w	1\n";
+			code += "				rsreset\n";
+			code += "AK_CHORD1		rs.l	1\n";
+			code += "AK_CHORD2		rs.l	1\n";
+			code += "AK_CHORD3		rs.l	1\n";
+			code += "				rsreset\n";
+			code += "AK_SmpLen		rs.l	31\n";
+			code += "AK_ExtSmpLen	rs.l	8\n";
+			if (usedNoise)
+				code += "AK_NoiseSeeds	rs.l	3\n";
+			code += "AK_SmpAddr		rs.l	31\n";
+			code += "AK_ExtSmpAddr	rs.l	8\n";
+			code += "AK_OpInstance	rs.w    %MAXWORDINSTANCES%\n";
+			code += "AK_EnvDValue	rs.l	%MAXENVDINSTANCES%\n";
+			code += "AK_VarSize		rs.w	0\n";
+
+			code += "\n";
+			code += "AK_Vars:\n";
+
+			for (int i = 0; i < 31; i++)
+			{
+				if (i < instrumentLength.Count)
+					code += "				dc.l	$" + instrumentLengthInt[i].ToString("x8") + "		; Instrument " + (i + 1).ToString() + " Length \n";
+				else
+					code += "				dc.l	$00000000		; Instrument " + (i + 1).ToString() + " Length \n";
+			}
+
+			for (int i = 0; i < 8; i++)
+			{
+				if (i < externalSampleLength.Count)
+					code += "				dc.l	$" + externalSampleLengthInt[i].ToString("x8") + "		; External Sample " + (i + 1).ToString() + " Length \n";
+				else
+					code += "				dc.l	$00000000		; External Sample " + (i + 1).ToString() + " Length \n";
+			}
+
+			if (usedNoise)
+			{
+				code += "				dc.l	$67452301		; AK_NoiseSeed1\n";
+				code += "				dc.l	$efcdab89		; AK_NoiseSeed2\n";
+				code += "				dc.l	$00000000		; AK_NoiseSeed3\n";
+			}
+			code += "				ds.b	AK_VarSize-AK_SmpAddr\n";
+
+			return code;
+		}
+		static string ClearVarsCode()
+		{
+			string code = string.Empty;
+
+			code += "AK_ResetVars:\n";
+			code += "				moveq   #0,d1\n";
+			code += "				moveq   #0,d2\n";
+			code += "				moveq   #0,d3\n";
+			if (maxLargeBufferInstance > 0)
+			{
+				code += "				move.w  d0,d7\n";
+				code += "				beq.s	.NoClearDelay\n";
+				code += "				lsl.w	#8,d7\n";       // * (4096 / 4) >> 2
+				code += "				subq.w	#1,d7\n";
+				code += "				move.l  a1,a6\n";
+				code += ".ClearDelayLoop\n";
+				code += "				move.l  d1,(a6)+\n";
+				code += "				move.l  d1,(a6)+\n";
+				code += "				move.l  d1,(a6)+\n";
+				code += "				move.l  d1,(a6)+\n";
+				code += "				dbra	d7,.ClearDelayLoop\n";
+				code += ".NoClearDelay\n";
+			}
+			code += "				moveq   #0,d0\n";
+			if (maxWordInstance > 0 || maxEnvdInstance > 0)
+				code += "				lea		AK_OpInstance(a5),a6\n";
+			if (maxWordInstance > 0)
+			{
+				for (int i = 0; i < maxWordInstance / 2; i++)
+					code += "				move.l	d0,(a6)+\n";
+			}
+			if (maxEnvdInstance > 0)
+			{
+				if (maxEnvdInstance == 1)
+					code += "				move.l  #32767<<16,(a6)+\n";
+				else
+				{
+					code += "				move.l  #32767<<16,d6\n";
+					for (int i = 0; i < maxEnvdInstance; i++)
+						code += "				move.l	d6,(a6)+\n";
+				}
+			}
+
+			code += "				rts\n";
+
+			return code;
+		}
+		static string DividerCode()
+		{
+			return ";----------------------------------------------------------------------------\n";
+		}
+	}
+}
