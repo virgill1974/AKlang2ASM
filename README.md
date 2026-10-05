@@ -44,10 +44,17 @@ If no option is supplied, progress writes are disabled.
 
 The script is a plain-text file that the Windows AmigaKlang tool can export. At a high level:
 
-1. **External sample lengths** — first line (before the first `$`) contains comma-separated integer lengths for up to eight imported samples. Example:
+1. **External sample lengths** — first line (before the first `$`) contains comma-separated integer lengths for up to eight (V1.15: twelve) imported samples. Example:
    ```
    1024,0,0,2048,0,0,0,0
    ```
+   V1.15: a length with an `a` (e.g. `2280a`) marks a 4 bit ADPCM sample (Yamaha style:
+   adaptive step, two nibbles per byte, first sample in the high nibble). The external sample
+   block then holds the delta coded samples first and the ADPCM samples (half the length,
+   rounded up) after them, both in slot order; `AK_EXT_SMP_LEN` is the size of the whole block.
+   ADPCM samples are decoded by `imported_sample` while it plays them (shared routine
+   `AK_AdpcmNext`, ~90 bytes, 2 words of instance data per use), so they need no extra memory.
+   Scripts with eight lengths and no `a` produce the same code as before.
 2. **Instrument blocks** — each block is separated by `$`. Inside a block:
    ```
    <name>,<length>,<loopOffset>,<loopLength>,<loopFlag>#
@@ -89,7 +96,7 @@ shorter than 257 samples), which also saves 6 bytes per loop.
 
 The generated `output.asm` contains:
 
-- Header banner describing the tool version (currently 1.14) and usage of `AK_Generate`.
+- Header banner describing the tool version (currently 1.15) and usage of `AK_Generate`.
 - Constant section with `AK_USE_PROGRESS`, `AK_FINE_PROGRESS`, buffer sizes (`AK_SMP_LEN`, `AK_EXT_SMP_LEN`, etc.).
 - The `AK_Generate` routine, which:
   - Computes sample and external sample base addresses.
