@@ -123,7 +123,7 @@ namespace Aklang2Asm
 
 			asmCode += DividerCode();
 			asmCode += ";\n";
-			asmCode += "; Generated with Aklang2Asm V1.11, by Dan/Lemon. 2021-2024.\n";
+			asmCode += "; Generated with Aklang2Asm V1.12, by Dan/Lemon. 2021-2024.\n";
 			asmCode += ";\n";
 			asmCode += "; Based on Alcatraz Amigaklang rendering core. (c) Jochen 'Virgill' Feldkötter 2020.\n";
 			asmCode += ";\n";
@@ -136,6 +136,9 @@ namespace Aklang2Asm
 			asmCode += ";\n";
 			asmCode += "; What's new in V1.11?\n";
 			asmCode += "; - Added value clamping to mode 1 of one-pole filter\n";
+			asmCode += ";\n";
+			asmCode += "; What's new in V1.12?\n";
+			asmCode += "; - Clone sample: optional transpose (-32768..32767 = -1..+1 octave, immediate or V1-V4)\n";
 			asmCode += ";\n";
 			asmCode += "; Call 'AK_Generate' with the following registers set:\n";
 			asmCode += "; a0 = Sample Buffer Start Address\n";
@@ -2326,6 +2329,10 @@ namespace Aklang2Asm
 			// sample = d7
 			// instrument = Immediate 0-31
 			// offset = immediate
+			// transpose = optional, Immediate or V1-V4 (see CloneTranspose)
+
+			if (inputs.Length > 3 && inputs[3] != "0")
+				return CloneTranspose(output, inputs, false);
 
 			string outReg = RemapVarToRegisterOrImmediate(output);
 			string basesample = GetInstanceOffset(inputs[1], 4);
@@ -2374,6 +2381,10 @@ namespace Aklang2Asm
 			// sample = d7
 			// instrument = Immediate 0-31
 			// offset = immediate
+			// transpose = optional, Immediate or V1-V4 (see CloneTranspose)
+
+			if (inputs.Length > 3 && inputs[3] != "0")
+				return CloneTranspose(output, inputs, true);
 
 			string outReg = RemapVarToRegisterOrImmediate(output);
 			string basesample = GetInstanceOffset(inputs[1], 4);
@@ -2402,6 +2413,89 @@ namespace Aklang2Asm
 			code = code.Replace("@OR", outReg);
 			code = code.Replace("@BS", basesample);
 			code = code.Replace("@OS", offset);
+
+			return code;
+		}
+
+		static string CloneTranspose(string output, string[] inputs, bool reverse)
+		{
+			//short clone(int smp, int instrument, int offset, short transpose)
+			//{
+			//	// pos = read position in 16.16 (one long instance, cleared per instrument)
+			//	ULONG p = (pos >> 16) + offset;
+			//	if (p >= SmpLength[instrument]) return 0;	// pos stops at the end of the source
+			//	pos += 65536 + (transpose < 0 ? transpose : 2 * transpose);	// -32768 = half speed, 0 = original, 32767 = double speed
+			//	BYTE val = forward ? *(BYTE*)(BaseAdr[instrument] + p) : *(BYTE*)(BaseAdr[instrument+1] - 1 - p);
+			//	return val<<8;
+			//}
+
+			// instrument = Immediate 0-31
+			// offset = immediate
+			// transpose = Immediate or V1-V4
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+			string basesample = GetInstanceOffset(inputs[1], 4);
+			string offset = RemapVarToRegisterOrImmediate(inputs[2]);
+			int offsetInt = offset.Contains("#") ? int.Parse(inputs[2]) : 0;
+			string transpose = RemapVarToRegisterOrImmediate(inputs[3]);
+
+			int instanceVal = (currentWordInstance * 2);
+			string instance = instanceVal.ToString();
+
+			string code = string.Empty;
+
+			// step first: the output register may be the transpose variable
+			if (!transpose.Contains("#"))
+			{
+				code += "				move.w	@TR,d5\n";
+				code += "				ext.l	d5\n";
+				code += "				bmi.s	.CloneTrNeg_" + localLabel + "\n";
+				code += "				add.l	d5,d5\n";
+				code += ".CloneTrNeg_" + localLabel + "\n";
+				code += "				add.l	#65536,d5\n";
+			}
+			code += "				move.l	AK_OpInstance+@IN(a5),d6\n";
+			code += "				clr.w	d6\n";
+			code += "				swap	d6\n";
+			if (offsetInt > 0)
+			{
+				if (offsetInt <= 8)
+					code += "				addq.l	@OS,d6\n";
+				else
+					code += "				add.l	@OS,d6\n";
+			}
+			code += "				moveq	#0,@OR\n";
+			code += "				cmp.l	AK_SmpLen+@BS(a5),d6\n";
+			code += "				bge.s	.NoCloneT_" + localLabel + "\n";
+			if (!transpose.Contains("#"))
+				code += "				add.l	d5,AK_OpInstance+@IN(a5)\n";
+			else
+			{
+				int t = int.Parse(inputs[3]);
+				int step = 65536 + (t < 0 ? t : 2 * t);
+				code += "				add.l	#" + step.ToString() + ",AK_OpInstance+@IN(a5)\n";
+			}
+			if (!reverse)
+			{
+				code += "				move.l	AK_SmpAddr+@BS(a5),a4\n";
+				code += "				move.b	(a4,d6.l),@OR\n";
+			}
+			else
+			{
+				code += "				move.l	AK_SmpAddr+@BS+4(a5),a4\n";
+				code += "				neg.l	d6\n";
+				code += "				move.b	-1(a4,d6.l),@OR\n";
+			}
+			code += "				asl.w	#8,@OR\n";
+			code += ".NoCloneT_" + localLabel + "\n";
+
+			code = code.Replace("@OR", outReg);
+			code = code.Replace("@BS", basesample);
+			code = code.Replace("@OS", offset);
+			code = code.Replace("@TR", transpose);
+			code = code.Replace("@IN", instance);
+
+			currentWordInstance += 2;
 
 			return code;
 		}

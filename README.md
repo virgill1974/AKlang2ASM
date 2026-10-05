@@ -65,11 +65,17 @@ Supported operators (see `Program.cs` for exact parameter ordering):
 `enva`, `envd`, `mul`, `add`, `ctrl`, `dly_cyc`, `cmb_flt_n`, `reverb`, `sv_flt_n`,
 `onepole_flt`, `chordgen`, `clone`, `clone_reverse`, `imported_sample`, `distortion`, `adsr`.
 
+`clone(smp,<instrument>,<offset>[,<transpose>])` and `clone_reverse(...)` take an optional
+transpose: a number or `v1`..`v4`, -32768 = one octave down (half speed), 0 = original,
+32767 = one octave up (double speed), linear in each half. The read position advances by
+`65536 + (t < 0 ? t : 2*t)` (16.16) per sample, so a modulated transpose bends the pitch.
+Without it (or with 0) the generated code is the same as in V1.11.
+
 ## Output overview
 
 The generated `output.asm` contains:
 
-- Header banner describing the tool version (currently 1.11) and usage of `AK_Generate`.
+- Header banner describing the tool version (currently 1.12) and usage of `AK_Generate`.
 - Constant section with `AK_USE_PROGRESS`, `AK_FINE_PROGRESS`, buffer sizes (`AK_SMP_LEN`, `AK_EXT_SMP_LEN`, etc.).
 - The `AK_Generate` routine, which:
   - Computes sample and external sample base addresses.
