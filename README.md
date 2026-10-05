@@ -63,7 +63,8 @@ Supported operators (see `Program.cs` for exact parameter ordering):
 
 `vol`, `osc_saw`, `osc_tri`, `osc_sine`, `osc_pulse`, `osc_noise`, `sh` (sample & hold),
 `enva`, `envd`, `mul`, `add`, `ctrl`, `dly_cyc`, `cmb_flt_n`, `reverb`, `sv_flt_n`,
-`onepole_flt`, `chordgen`, `clone`, `clone_reverse`, `imported_sample`, `distortion`, `adsr`.
+`onepole_flt`, `chordgen`, `clone`, `clone_reverse`, `imported_sample`, `distortion`, `adsr`,
+`samplemixer`.
 
 `clone(smp,<instrument>,<offset>[,<transpose>])` and `clone_reverse(...)` take an optional
 transpose: a number or `v1`..`v4`, -32768 = one octave down (half speed), 0 = original,
@@ -71,11 +72,18 @@ transpose: a number or `v1`..`v4`, -32768 = one octave down (half speed), 0 = or
 `65536 + (t < 0 ? t : 2*t)` (16.16) per sample, so a modulated transpose bends the pitch.
 Without it (or with 0) the generated code is the same as in V1.11.
 
+`samplemixer(<instance>,<rowlength>,<notes>,<row>,<track>,<source>,<step>,<volume>,...)` mixes
+a sequencer pattern of the editor (4 tracks, 16 rows): every `rowlength` samples the next row
+starts; each of the `notes` entries (resolved by the editor) restarts the voice of its track
+with a source instrument (0-based, -1 = the track falls silent), a step in 16.16 (65536 = C-3)
+and a volume 0..64. A voice plays its source once; the output is the sum of
+`sample * volume` of all voices, times 4, clamped to 16 bit.
+
 ## Output overview
 
 The generated `output.asm` contains:
 
-- Header banner describing the tool version (currently 1.12) and usage of `AK_Generate`.
+- Header banner describing the tool version (currently 1.13) and usage of `AK_Generate`.
 - Constant section with `AK_USE_PROGRESS`, `AK_FINE_PROGRESS`, buffer sizes (`AK_SMP_LEN`, `AK_EXT_SMP_LEN`, etc.).
 - The `AK_Generate` routine, which:
   - Computes sample and external sample base addresses.
