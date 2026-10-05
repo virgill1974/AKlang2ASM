@@ -123,7 +123,7 @@ namespace Aklang2Asm
 
 			asmCode += DividerCode();
 			asmCode += ";\n";
-			asmCode += "; Generated with Aklang2Asm V1.12, by Dan/Lemon. 2021-2024.\n";
+			asmCode += "; Generated with Aklang2Asm V1.13, by Dan/Lemon. 2021-2024.\n";
 			asmCode += ";\n";
 			asmCode += "; Based on Alcatraz Amigaklang rendering core. (c) Jochen 'Virgill' Feldkötter 2020.\n";
 			asmCode += ";\n";
@@ -139,6 +139,9 @@ namespace Aklang2Asm
 			asmCode += ";\n";
 			asmCode += "; What's new in V1.12?\n";
 			asmCode += "; - Clone sample: optional transpose (-32768..32767 = -1..+1 octave, immediate or V1-V4)\n";
+			asmCode += ";\n";
+			asmCode += "; What's new in V1.13?\n";
+			asmCode += "; - Sample mixer: plays a 4 track pattern of other instruments into a sample\n";
 			asmCode += ";\n";
 			asmCode += "; Call 'AK_Generate' with the following registers set:\n";
 			asmCode += "; a0 = Sample Buffer Start Address\n";
@@ -392,6 +395,10 @@ namespace Aklang2Asm
 						else if (instrumentInstructions[j].Contains("clone_reverse("))
 						{
 							asmCode += CloneReverse(output, inputs);
+						}
+						else if (instrumentInstructions[j].Contains("samplemixer("))
+						{
+							asmCode += SampleMixer(output, inputs);
 						}
 						else if (instrumentInstructions[j].Contains("imported_sample("))
 						{
@@ -2496,6 +2503,117 @@ namespace Aklang2Asm
 			code = code.Replace("@IN", instance);
 
 			currentWordInstance += 2;
+
+			return code;
+		}
+
+		static string SampleMixer(string output, string[] inputs)
+		{
+			//short samplemixer(int instance, int rowlength, int notes, (row, track, source, step, volume) * notes)
+			//{
+			//	every rowlength samples the next of the 16 rows starts. A note (re)starts the voice of its
+			//	track: source instrument (-1 = the track falls silent), position 0, step (16.16, 65536 = C-3)
+			//	and volume 0..64. A voice plays its source once.
+			//	sum = 0;
+			//	for each voice: if ((pos >> 16) < SmpLength[source]) { sum += *(BYTE*)(BaseAdr[source] + (pos >> 16)) * volume; pos += step; }
+			//	return clamp(sum * 4);
+			//}
+
+			// instance = Immediate (slot, unused)
+			// rowlength = Immediate 1..65535
+			// notes = Immediate, followed by 5 immediates per note (resolved by the editor)
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+			int rowLength = int.Parse(inputs[1]);
+			int notes = int.Parse(inputs[2]);
+
+			// instance: row counter.w, row.w, 4 voices of 20 bytes: address.l, length.l, position.l, step.l, volume.w, pad.w
+			int instanceVal = (currentWordInstance * 2);
+			string Var(int offset) => "AK_OpInstance+" + (instanceVal + offset).ToString() + "(a5)";
+			const int counter = 0, row = 2;
+			int Voice(int track) => 4 + track * 20;
+
+			var rows = new SortedDictionary<int, List<int[]>>();
+			bool[] tracksUsed = new bool[4];
+			for (int n = 0; n < notes; n++)
+			{
+				int k = 3 + n * 5;
+				int[] note = { int.Parse(inputs[k]), int.Parse(inputs[k + 1]), int.Parse(inputs[k + 2]), int.Parse(inputs[k + 3]), int.Parse(inputs[k + 4]) };
+				if (!rows.ContainsKey(note[0])) rows[note[0]] = new List<int[]>();
+				rows[note[0]].Add(note);
+				tracksUsed[note[1]] = true;
+			}
+
+			string code = string.Empty;
+
+			// next row: start the voices of its notes
+			code += "				tst.w	" + Var(counter) + "\n";
+			code += "				bne.w	.MixNoRow_" + localLabel + "\n";
+			code += "				move.w	" + Var(row) + ",d4\n";
+			code += "				cmp.w	#16,d4\n";
+			code += "				bhs.w	.MixNoRow_" + localLabel + "\n";
+			code += "				addq.w	#1," + Var(row) + "\n";
+			code += "				move.w	#" + rowLength.ToString() + "," + Var(counter) + "\n";
+			foreach (var r in rows)
+			{
+				code += "				cmp.w	#" + r.Key.ToString() + ",d4\n";
+				code += "				bne.w	.MixRow" + r.Key.ToString() + "_" + localLabel + "\n";
+				foreach (var note in r.Value)
+				{
+					int v = Voice(note[1]);
+					if (note[2] < 0)
+					{
+						code += "				clr.l	" + Var(v + 4) + "\n";
+						continue;
+					}
+					code += "				move.l	AK_SmpAddr+" + (note[2] * 4).ToString() + "(a5)," + Var(v) + "\n";
+					code += "				move.l	AK_SmpLen+" + (note[2] * 4).ToString() + "(a5)," + Var(v + 4) + "\n";
+					code += "				clr.l	" + Var(v + 8) + "\n";
+					code += "				move.l	#" + note[3].ToString() + "," + Var(v + 12) + "\n";
+					code += "				move.w	#" + note[4].ToString() + "," + Var(v + 16) + "\n";
+				}
+				code += ".MixRow" + r.Key.ToString() + "_" + localLabel + "\n";
+			}
+			code += ".MixNoRow_" + localLabel + "\n";
+			code += "				subq.w	#1," + Var(counter) + "\n";
+
+			// mix the voices
+			code += "				moveq	#0,d5\n";
+			for (int t = 0; t < 4; t++)
+			{
+				if (!tracksUsed[t]) continue;
+				int v = Voice(t);
+				code += "				move.l	" + Var(v + 8) + ",d6\n";
+				code += "				clr.w	d6\n";
+				code += "				swap	d6\n";
+				code += "				cmp.l	" + Var(v + 4) + ",d6\n";
+				code += "				bge.s	.MixVoice" + t.ToString() + "_" + localLabel + "\n";
+				code += "				move.l	" + Var(v) + ",a4\n";
+				code += "				move.b	(a4,d6.l),d4\n";
+				code += "				ext.w	d4\n";
+				code += "				muls	" + Var(v + 16) + ",d4\n";
+				code += "				add.l	d4,d5\n";
+				code += "				move.l	" + Var(v + 12) + ",d6\n";
+				code += "				add.l	d6," + Var(v + 8) + "\n";
+				code += ".MixVoice" + t.ToString() + "_" + localLabel + "\n";
+			}
+
+			// * 4, clamp to 16 bit
+			code += "				asl.l	#2,d5\n";
+			code += "				cmp.l	#32767,d5\n";
+			code += "				ble.s	.MixNoMax_" + localLabel + "\n";
+			code += "				move.w	#32767,d5\n";
+			code += "				bra.s	.MixDone_" + localLabel + "\n";
+			code += ".MixNoMax_" + localLabel + "\n";
+			code += "				cmp.l	#-32768,d5\n";
+			code += "				bge.s	.MixDone_" + localLabel + "\n";
+			code += "				move.w	#-32768,d5\n";
+			code += ".MixDone_" + localLabel + "\n";
+			code += "				move.w	d5,@OR\n";
+
+			code = code.Replace("@OR", outReg);
+
+			currentWordInstance += 42;
 
 			return code;
 		}
