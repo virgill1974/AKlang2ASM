@@ -123,7 +123,7 @@ namespace Aklang2Asm
 
 			asmCode += DividerCode();
 			asmCode += ";\n";
-			asmCode += "; Generated with Aklang2Asm V1.13, by Dan/Lemon. 2021-2024.\n";
+			asmCode += "; Generated with Aklang2Asm V1.14, by Dan/Lemon. 2021-2024.\n";
 			asmCode += ";\n";
 			asmCode += "; Based on Alcatraz Amigaklang rendering core. (c) Jochen 'Virgill' Feldkötter 2020.\n";
 			asmCode += ";\n";
@@ -142,6 +142,10 @@ namespace Aklang2Asm
 			asmCode += ";\n";
 			asmCode += "; What's new in V1.13?\n";
 			asmCode += "; - Sample mixer: plays a 4 track pattern of other instruments into a sample\n";
+			asmCode += ";\n";
+			asmCode += "; What's new in V1.14?\n";
+			asmCode += "; - Loop generator: the loop may be longer than the part in front of it (crossfade =\n";
+			asmCode += ";   min(repeat length, repeat offset)), constant step instead of divs (no overflow below 257)\n";
 			asmCode += ";\n";
 			asmCode += "; Call 'AK_Generate' with the following registers set:\n";
 			asmCode += "; a0 = Sample Buffer Start Address\n";
@@ -2652,13 +2656,16 @@ namespace Aklang2Asm
 		{
 			//void loopgen(WORD repeat_length, WORD repeat_offset, void* BaseAdr)
 			//{
+			//	// the end of the loop is crossfaded with the part in front of the loop start, as long
+			//	// as possible (V1.14: the loop may be longer than the part in front of it)
+			//	int fade = min(repeat_length, repeat_offset);
 			//	int smp;
-			//	BYTE* src1 = BaseAdr + repeat_offset;
-			//	BYTE* src2 = BaseAdr + repeat_offset - repeat_length;
-			//	int delta = divsw((32767 << 8), repeat_length);
+			//	BYTE* src1 = BaseAdr + repeat_offset + repeat_length - fade;
+			//	BYTE* src2 = src1 - repeat_length;
+			//	int delta = (32767 << 8) / fade;		// constant, no divs (overflowed below 257)
 			//	int rampup = 0;
 			//	int rampdown = 32767 << 8;
-			//	for (smp = 0; smp < repeat_length; smp++)
+			//	for (smp = 0; smp < fade; smp++)
 			//	{
 			//		short a = (rampup >> 8);
 			//		short b = (rampdown >> 8);
@@ -2675,28 +2682,32 @@ namespace Aklang2Asm
 
 			int repLenInt = int.Parse(repeat_length);
 			int repOffInt = int.Parse(repeat_offset);
+			int fade = Math.Min(repLenInt, repOffInt);
+			if (fade <= 0)
+				return "				; no crossfade: the loop starts at the beginning of the sample\n";
+			int start = repOffInt + repLenInt - fade;
+			int delta = (32767 << 8) / fade;
 
-			fineProgressLength += repLenInt;
+			fineProgressLength += fade;
 
 			string code = string.Empty;
 
-			code += "				move.l	#@RL,d7\n";
+			code += fade <= 127 ? "				moveq	#@FD,d7\n" : "				move.l	#@FD,d7\n";
 			code += "				move.l	AK_SmpAddr+@IN(a5),a0\n";
-			if (repOffInt < 32768)
-				code += "				lea		@RO(a0),a0\n";
+			if (start < 32768)
+				code += "				lea		@ST(a0),a0\n";
 			else
-				code += "				add.l	#@RO,a0\n";
-			code += "				move.l	a0,a1\n";
-			code += "				sub.l	d7,a1\n";
+				code += "				add.l	#@ST,a0\n";
+			if (repLenInt <= 32768)
+				code += "				lea		-@RL(a0),a1\n";
+			else
+			{
+				code += "				move.l	a0,a1\n";
+				code += "				sub.l	#@RL,a1\n";
+			}
 			code += "				moveq	#0,d4\n";
 			code += "				move.l	#32767<<8,d5\n";
-			code += "				move.l	d5,d0\n";
-			code += "				divs	d7,d0\n";
-			code += "				bvc.s	.LoopGenVC_" + instrument + "\n";
-			code += "				moveq	#0,d0\n";
-			code += ".LoopGenVC_" + instrument + "\n";
-			code += "				moveq	#0,d6\n";
-			code += "				move.w	d0,d6\n";
+			code += "				move.l	#@DT,d6\n";
 			code += ".LoopGen_" + instrument + "\n";
 			code += "				move.l	d4,d2\n";
 			code += "				asr.l	#8,d2\n";
@@ -2725,8 +2736,10 @@ namespace Aklang2Asm
 			code += "				bne.s	.LoopGen_" + instrument + "\n";
 
 			code = code.Replace("@IN", instr);
-			code = code.Replace("@RO", repeat_offset);
+			code = code.Replace("@FD", fade.ToString());
+			code = code.Replace("@ST", start.ToString());
 			code = code.Replace("@RL", repeat_length);
+			code = code.Replace("@DT", delta.ToString());
 
 			return code;
 		}

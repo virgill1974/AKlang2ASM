@@ -79,11 +79,17 @@ with a source instrument (0-based, -1 = the track falls silent), a step in 16.16
 and a volume 0..64. A voice plays its source once; the output is the sum of
 `sample * volume` of all voices, times 4, clamped to 16 bit.
 
+Loop generator (V1.14): the last `min(repeat length, repeat offset)` samples of the loop are
+crossfaded with the samples in front of the loop start, so the loop may be longer than the part
+in front of it (offset 0 = no crossfade). Loops that are not longer than that part are generated
+exactly as before. The crossfade step is a constant (no `divs`, which overflowed for loops
+shorter than 257 samples), which also saves 6 bytes per loop.
+
 ## Output overview
 
 The generated `output.asm` contains:
 
-- Header banner describing the tool version (currently 1.13) and usage of `AK_Generate`.
+- Header banner describing the tool version (currently 1.14) and usage of `AK_Generate`.
 - Constant section with `AK_USE_PROGRESS`, `AK_FINE_PROGRESS`, buffer sizes (`AK_SMP_LEN`, `AK_EXT_SMP_LEN`, etc.).
 - The `AK_Generate` routine, which:
   - Computes sample and external sample base addresses.
