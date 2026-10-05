@@ -24,7 +24,13 @@ namespace Aklang2Asm
 
 		static List<string> externalSampleLength = new List<string>();
 		static List<int> externalSampleLengthInt = new List<int>();
-		static int externalSampleTotalLength = 0;
+		static int externalSampleTotalLength = 0;		// bytes of the external sample block (deltas + ADPCM)
+		// V1.15: up to 12 external samples, "<length>a" = 4 bit ADPCM (stored after the delta samples)
+		static List<bool> externalSampleAdpcm = new List<bool>();
+		static int externalSlots = 8;
+		static int externalDeltaLength = 0;
+		static bool externalAdpcm = false;
+		static bool usedAdpcm = false;					// an imported_sample plays an ADPCM sample
 
 		static int currentLargeBufferInstance = 0;
 		static int maxLargeBufferInstance = 0;
@@ -113,17 +119,35 @@ namespace Aklang2Asm
 
 			for (int i = 0; i < externalSampleLengths.Count; i++)
 			{
-				externalSampleLength.Add(externalSampleLengths[i]);
-				int length = int.Parse(externalSampleLengths[i]);
+				string entry = externalSampleLengths[i];
+				bool adpcm = entry.EndsWith("a");
+				int length = int.Parse(adpcm ? entry.Substring(0, entry.Length - 1) : entry);
+				externalSampleLength.Add(length.ToString());
 				externalSampleLengthInt.Add(length);
-				externalSampleTotalLength += length;
+				externalSampleAdpcm.Add(adpcm && length > 0);
+				if (adpcm && length > 0)
+				{
+					externalAdpcm = true;
+					externalSampleTotalLength += (length + 1) / 2;
+				}
+				else
+				{
+					externalDeltaLength += length;
+					externalSampleTotalLength += length;
+				}
+			}
+			externalSlots = Math.Max(8, externalSampleLengths.Count);
+			if (externalSlots > 12)
+			{
+				Console.WriteLine("Error: more than 12 external samples");
+				return;
 			}
 
 			string asmCode = string.Empty;
 
 			asmCode += DividerCode();
 			asmCode += ";\n";
-			asmCode += "; Generated with Aklang2Asm V1.14, by Dan/Lemon. 2021-2024.\n";
+			asmCode += "; Generated with Aklang2Asm V1.15, by Dan/Lemon. 2021-2024.\n";
 			asmCode += ";\n";
 			asmCode += "; Based on Alcatraz Amigaklang rendering core. (c) Jochen 'Virgill' Feldkötter 2020.\n";
 			asmCode += ";\n";
@@ -146,6 +170,10 @@ namespace Aklang2Asm
 			asmCode += "; What's new in V1.14?\n";
 			asmCode += "; - Loop generator: the loop may be longer than the part in front of it (crossfade =\n";
 			asmCode += ";   min(repeat length, repeat offset)), constant step instead of divs (no overflow below 257)\n";
+			asmCode += ";\n";
+			asmCode += "; What's new in V1.15?\n";
+			asmCode += "; - Up to 12 external samples; \"<length>a\" in the script = 4 bit ADPCM (Yamaha style),\n";
+			asmCode += ";   stored after the delta samples and decoded while imported_sample plays it\n";
 			asmCode += ";\n";
 			asmCode += "; Call 'AK_Generate' with the following registers set:\n";
 			asmCode += "; a0 = Sample Buffer Start Address\n";
@@ -184,18 +212,44 @@ namespace Aklang2Asm
 			asmCode += ".SmpAdrLoop		move.l	d0,(a4)+\n";
 			asmCode += "				add.l	(a6)+,d0\n";
 			asmCode += "				dbra	d7,.SmpAdrLoop\n";
-			asmCode += "				move.l	a2,d0\n";
-			asmCode += "				moveq	#8-1,d7\n";
-			asmCode += ".ExtSmpAdrLoop	move.l	d0,(a4)+\n";
-			asmCode += "				add.l	(a6)+,d0\n";
-			asmCode += "				dbra	d7,.ExtSmpAdrLoop\n";
+			if (!externalAdpcm)
+			{
+				asmCode += "				move.l	a2,d0\n";
+				asmCode += "				moveq	#" + externalSlots.ToString() + "-1,d7\n";
+				asmCode += ".ExtSmpAdrLoop	move.l	d0,(a4)+\n";
+				asmCode += "				add.l	(a6)+,d0\n";
+				asmCode += "				dbra	d7,.ExtSmpAdrLoop\n";
+			}
+			else
+			{
+				// the delta samples come first, the ADPCM samples (half the size) after them
+				int deltaOffset = 0, adpcmOffset = externalDeltaLength;
+				for (int i = 0; i < externalSampleLengthInt.Count; i++)
+				{
+					int length = externalSampleLengthInt[i];
+					if (length == 0) continue;
+					int offset = externalSampleAdpcm[i] ? adpcmOffset : deltaOffset;
+					if (externalSampleAdpcm[i]) adpcmOffset += (length + 1) / 2; else deltaOffset += length;
+					if (offset < 32768)
+						asmCode += "				lea		" + offset.ToString() + "(a2),a6\n";
+					else
+					{
+						asmCode += "				move.l	a2,a6\n";
+						asmCode += "				add.l	#" + offset.ToString() + ",a6\n";
+					}
+					asmCode += "				move.l	a6,AK_ExtSmpAddr+" + (i * 4).ToString() + "(a5)\n";
+				}
+			}
 			asmCode += "\n";
 
-			if (externalSampleTotalLength > 0)
+			if (externalDeltaLength > 0)
 			{
 				asmCode += "				; Convert external samples from stored deltas\n";
 				asmCode += "				move.l	a2,a6\n";
-				asmCode += "				move.w	#AK_EXT_SMP_LEN-1,d7\n";
+				if (!externalAdpcm)
+					asmCode += "				move.w	#AK_EXT_SMP_LEN-1,d7\n";
+				else
+					asmCode += "				move.w	#" + externalDeltaLength.ToString() + "-1,d7\n";
 				asmCode += "				moveq	#0,d0\n";
 				asmCode += ".DeltaLoop		add.b	(a6),d0\n";
 				asmCode += "				move.b	d0,(a6)+\n";
@@ -497,6 +551,11 @@ namespace Aklang2Asm
 			asmCode += DividerCode();
 			asmCode += "\n";
 			asmCode += ClearVarsCode();
+			if (usedAdpcm)
+			{
+				asmCode += "\n";
+				asmCode += AdpcmCode();
+			}
 			asmCode += "\n";
 			asmCode += DividerCode();
 			asmCode += "\n";
@@ -2631,10 +2690,13 @@ namespace Aklang2Asm
 			//}
 
 			// sample = d7
-			// basesample = Immediate 0-7
+			// basesample = Immediate 0-11
 
 			string outReg = RemapVarToRegisterOrImmediate(output);
 			string basesample = GetInstanceOffset(inputs[1], 4);
+			int slot = int.Parse(inputs[1]);
+			if (slot < externalSampleAdpcm.Count && externalSampleAdpcm[slot])
+				return ImportedSampleAdpcm(outReg, basesample);
 
 			string code = string.Empty;
 
@@ -2648,6 +2710,102 @@ namespace Aklang2Asm
 
 			code = code.Replace("@OR", outReg);
 			code = code.Replace("@BS", basesample);
+
+			return code;
+		}
+
+		static string ImportedSampleAdpcm(string outReg, string basesample)
+		{
+			//short imported_sample(int smp, int sample)		// 4 bit ADPCM, decoded while playing
+			//{
+			//	if (smp >= ImpLength[sample]) return 0;
+			//	return AK_AdpcmNext(ImpBaseAdr[sample], smp, state) & 0xff00;	// state: value, step (per instance)
+			//}
+
+			int instanceVal = (currentWordInstance * 2);
+			usedAdpcm = true;
+
+			string code = string.Empty;
+
+			code += "				moveq	#0,@OR\n";
+			code += "				cmp.l	AK_ExtSmpLen+@BS(a5),d7\n";
+			code += "				bge.s	.NoAdpcmIS_" + localLabel + "\n";
+			code += "				move.l	AK_ExtSmpAddr+@BS(a5),a4\n";
+			code += "				lea		AK_OpInstance+@IN(a5),a6\n";
+			code += "				bsr		AK_AdpcmNext\n";
+			code += "				move.w	d6,@OR\n";
+			code += "				clr.b	@OR\n";
+			code += ".NoAdpcmIS_" + localLabel + "\n";
+
+			code = code.Replace("@OR", outReg);
+			code = code.Replace("@BS", basesample);
+			code = code.Replace("@IN", instanceVal.ToString());
+
+			currentWordInstance += 2;
+
+			return code;
+		}
+
+		static string AdpcmCode()
+		{
+			//short AK_AdpcmNext(BYTE* data, int smp, WORD* state)
+			//{
+			//	// Yamaha style 4 bit ADPCM: two nibbles per byte, the first sample in the high nibble
+			//	int nibble = smp & 1 ? data[smp >> 1] & 15 : data[smp >> 1] >> 4;
+			//	int m = nibble & 7, step = state[1] + 127;
+			//	int diff = ((2 * m + 1) * step) >> 3;
+			//	state[0] = clamp16(state[0] + (nibble & 8 ? -diff : diff));
+			//	state[1] = clamp(step * steps[m] >> 6, 127, 24576) - 127;		// cleared state = start
+			//	return state[0];
+			//}
+			// in: a4 = data, d7 = sample, a6 = state (value.w, step-127.w)
+			// out: d6.w = 16 bit sample; uses d4/d5/a4
+
+			string code = string.Empty;
+
+			code += "AK_AdpcmNext:\n";
+			code += "				move.l	d7,d4\n";
+			code += "				lsr.l	#1,d4\n";
+			code += "				move.b	(a4,d4.l),d4\n";
+			code += "				btst	#0,d7\n";
+			code += "				bne.s	.AdpcmLo\n";
+			code += "				lsr.b	#4,d4\n";
+			code += ".AdpcmLo		moveq	#7,d6\n";
+			code += "				and.w	d4,d6\n";
+			code += "				move.w	2(a6),d5\n";
+			code += "				add.w	#127,d5\n";
+			code += "				add.w	d6,d6\n";
+			code += "				addq.w	#1,d6\n";
+			code += "				mulu	d5,d6\n";
+			code += "				lsr.l	#3,d6\n";
+			code += "				btst	#3,d4\n";
+			code += "				beq.s	.AdpcmPos\n";
+			code += "				neg.l	d6\n";
+			code += ".AdpcmPos		move.w	(a6),a4\n";
+			code += "				add.l	a4,d6\n";
+			code += "				cmp.l	#32767,d6\n";
+			code += "				ble.s	.AdpcmNoMax\n";
+			code += "				move.w	#32767,d6\n";
+			code += "				bra.s	.AdpcmValue\n";
+			code += ".AdpcmNoMax		cmp.l	#-32768,d6\n";
+			code += "				bge.s	.AdpcmValue\n";
+			code += "				move.w	#-32768,d6\n";
+			code += ".AdpcmValue		move.w	d6,(a6)\n";
+			code += "				and.w	#7,d4\n";
+			code += "				move.b	.AdpcmSteps(pc,d4.w),d4\n";
+			code += "				mulu	d4,d5\n";
+			code += "				lsr.l	#6,d5\n";
+			code += "				cmp.l	#24576,d5\n";
+			code += "				bls.s	.AdpcmNoStepMax\n";
+			code += "				move.w	#24576,d5\n";
+			code += ".AdpcmNoStepMax	cmp.w	#127,d5\n";
+			code += "				bhs.s	.AdpcmStepOk\n";
+			code += "				moveq	#127,d5\n";
+			code += ".AdpcmStepOk	sub.w	#127,d5\n";
+			code += "				move.w	d5,2(a6)\n";
+			code += "				rts\n";
+			code += ".AdpcmSteps		dc.b	57,57,57,57,77,102,128,153\n";
+			code += "\n";
 
 			return code;
 		}
@@ -2818,11 +2976,11 @@ namespace Aklang2Asm
 			code += "AK_CHORD3		rs.l	1\n";
 			code += "				rsreset\n";
 			code += "AK_SmpLen		rs.l	31\n";
-			code += "AK_ExtSmpLen	rs.l	8\n";
+			code += "AK_ExtSmpLen	rs.l	" + externalSlots.ToString() + "\n";
 			if (usedNoise)
 				code += "AK_NoiseSeeds	rs.l	3\n";
 			code += "AK_SmpAddr		rs.l	31\n";
-			code += "AK_ExtSmpAddr	rs.l	8\n";
+			code += "AK_ExtSmpAddr	rs.l	" + externalSlots.ToString() + "\n";
 			code += "AK_OpInstance	rs.w    %MAXWORDINSTANCES%\n";
 			code += "AK_EnvDValue	rs.l	%MAXENVDINSTANCES%\n";
 			code += "AK_VarSize		rs.w	0\n";
@@ -2838,7 +2996,7 @@ namespace Aklang2Asm
 					code += "				dc.l	$00000000		; Instrument " + (i + 1).ToString() + " Length \n";
 			}
 
-			for (int i = 0; i < 8; i++)
+			for (int i = 0; i < externalSlots; i++)
 			{
 				if (i < externalSampleLength.Count)
 					code += "				dc.l	$" + externalSampleLengthInt[i].ToString("x8") + "		; External Sample " + (i + 1).ToString() + " Length \n";
