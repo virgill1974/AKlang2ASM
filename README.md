@@ -77,7 +77,7 @@ Supported operators (see `Program.cs` for exact parameter ordering):
 `vol`, `osc_saw`, `osc_tri`, `osc_sine`, `osc_pulse`, `osc_noise`, `sh` (sample & hold),
 `enva`, `envd`, `mul`, `add`, `ctrl`, `dly_cyc`, `cmb_flt_n`, `reverb`, `sv_flt_n`,
 `onepole_flt`, `chordgen`, `clone`, `clone_reverse`, `imported_sample`, `distortion`, `adsr`,
-`samplemixer`.
+`samplemixer`, `bytebeat`.
 
 `clone(smp,<instrument>,<offset>[,<transpose>])` and `clone_reverse(...)` take an optional
 transpose: a number or `v1`..`v4`, -32768 = one octave down (half speed), 0 = original,
@@ -92,6 +92,22 @@ with a source instrument (0-based, -1 = the track falls silent), a step in 16.16
 and a volume 0..64. A voice plays its source once; the output is the sum of
 `sample * volume` of all voices, times 4, clamped to 16 bit.
 
+`bytebeat(<gain>,<formula>)` (V1.17, experimental) computes a formula over `t`, the sample
+number, e.g. `v1 = bytebeat(128, t*(t>>5|t>>8));`. The formula is the rest of the line up to the
+last `)`. Numbers 0..65535 (or `0x..`), `t`, parentheses, unary `- ~ !` and the C operators
+`* / % + - << >> < <= > >= == != & ^ | && || ?:` with C precedence, at most 120 characters.
+Everything is unsigned 16 bit: overflow wraps, `x/0` and `x%0` are 0, shift counts are taken
+`& 63` and give 0 from 16 on, comparisons are unsigned and give 0 or 1. The low byte of the result
+is the sample (centered), then the gain like `osc_saw` (128 = 1:1, number or `v1`..`v4`).
+The formula is compiled into `.w` code on `d4` (`d5`/`d6` and the stack as scratch, `t` = `d7`):
+`mulu.w` for `*` and `divu.w` with a zero extended dividend for `/` and `%` (can't overflow).
+`Bytebeat.cs` holds parser and semantics; the AmigaKlang editor uses the same file, so the
+editor preview and the Amiga render the same samples.
+
+V1.17 also defines `AK_VERSION equ 117` in the header (players can check for a minimum
+version) and prints a warning for script lines with an unknown operator instead of silently
+skipping them.
+
 Loop generator (V1.14): the last `min(repeat length, repeat offset)` samples of the loop are
 crossfaded with the samples in front of the loop start, so the loop may be longer than the part
 in front of it (offset 0 = no crossfade). Loops that are not longer than that part are generated
@@ -102,7 +118,7 @@ shorter than 257 samples), which also saves 6 bytes per loop.
 
 The generated `output.asm` contains:
 
-- Header banner describing the tool version (currently 1.16) and usage of `AK_Generate`.
+- Header banner describing the tool version (currently 1.17) and usage of `AK_Generate`.
 - Constant section with `AK_USE_PROGRESS`, `AK_FINE_PROGRESS`, buffer sizes (`AK_SMP_LEN`, `AK_EXT_SMP_LEN`, etc.).
 - The `AK_Generate` routine, which:
   - Computes sample and external sample base addresses.
