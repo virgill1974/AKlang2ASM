@@ -43,6 +43,14 @@ namespace Aklang2Asm
 
 		static bool useProgress = false;
 		static bool useFineProgress = false;
+		static bool earlyPlay = false;			// -e: a sample can be played as soon as it is rendered
+
+		// no key wait when started with redirected input (batch files, the AmigaKlang exe export)
+		static void WaitKey()
+		{
+			if (!Console.IsInputRedirected)
+				Console.ReadKey();
+		}
 
 		static void Main(string[] args)
 		{
@@ -70,27 +78,33 @@ namespace Aklang2Asm
 
 			if (args.Length < 2)
 			{
-				Console.WriteLine("Usage: Aklang2Asm <script.txt> <output.asm>");
+				Console.WriteLine("Usage: Aklang2Asm <script.txt> <output.asm> [-p|-pf] [-e]");
 				Console.WriteLine("Press Any Key To Continue...");
-				Console.ReadKey();
+				WaitKey();
 				return;
 			}
 
 			useProgress = false;
 			useFineProgress = false;
+			earlyPlay = false;
 
-			if (args.Length >= 3 )
+			for (int a = 2; a < args.Length; a++)
 			{
-				if ( args[2] == "-p" )
+				if ( args[a] == "-p" )
 				{
 					Console.WriteLine("Using Progress");
 					useProgress = true;
 				}
-				else if ( args[2] == "-pf" )
+				else if ( args[a] == "-pf" )
 				{
 					Console.WriteLine("Using Fine Progress");
 					useProgress = true;
 					useFineProgress = true;
+				}
+				else if ( args[a] == "-e" )
+				{
+					Console.WriteLine("Early play: clearing the first word of each sample right after it is rendered");
+					earlyPlay = true;
 				}
 				else
 				{
@@ -102,7 +116,7 @@ namespace Aklang2Asm
 			{
 				Console.WriteLine("Could not find script file: " + args[0]);
 				Console.WriteLine("Press Any Key To Continue...");
-				Console.ReadKey();
+				WaitKey();
 				return;
 			}
 
@@ -147,7 +161,7 @@ namespace Aklang2Asm
 
 			asmCode += DividerCode();
 			asmCode += ";\n";
-			asmCode += "; Generated with Aklang2Asm V1.15, by Dan/Lemon. 2021-2024.\n";
+			asmCode += "; Generated with Aklang2Asm V1.16, by Dan/Lemon. 2021-2024.\n";
 			asmCode += ";\n";
 			asmCode += "; Based on Alcatraz Amigaklang rendering core. (c) Jochen 'Virgill' Feldkötter 2020.\n";
 			asmCode += ";\n";
@@ -175,6 +189,11 @@ namespace Aklang2Asm
 			asmCode += "; - Up to 12 external samples; \"<length>a\" in the script = 4 bit ADPCM (Yamaha style),\n";
 			asmCode += ";   stored after the delta samples and decoded while imported_sample plays it\n";
 			asmCode += ";\n";
+			asmCode += "; What's new in V1.16?\n";
+			asmCode += "; - AK_TMP_LEN: size of the temporary work buffer (a1)\n";
+			asmCode += "; - Option -e (early play): the first word of each sample is cleared right after it is\n";
+			asmCode += ";   rendered, so a player can start before all samples are rendered\n";
+			asmCode += ";\n";
 			asmCode += "; Call 'AK_Generate' with the following registers set:\n";
 			asmCode += "; a0 = Sample Buffer Start Address\n";
 			asmCode += "; a1 = %LARGEBUFFSIZE% Bytes Temporary Work Buffer Address (can be freed after sample rendering complete)\n";
@@ -191,6 +210,7 @@ namespace Aklang2Asm
 			asmCode += "AK_FINE_PROGRESS_LEN	equ %FINEPROGRESSLEN%\n";
 			asmCode += "AK_SMP_LEN				equ %SAMPLESIZE%\n";
 			asmCode += "AK_EXT_SMP_LEN			equ " + externalSampleTotalLength.ToString() + "\n";
+			asmCode += "AK_TMP_LEN				equ %LARGEBUFFSIZE%\n";
 			asmCode += "\n";
 			asmCode += "AK_Generate:\n";
 			asmCode += "\n";
@@ -521,6 +541,15 @@ namespace Aklang2Asm
 						}
 					}
 
+					if (earlyPlay)
+					{
+						// one shot samples repeat their first word: clear it now, not only at the end,
+						// so the music can already play this sample while the next ones are rendered
+						asmCode += "				move.l	AK_SmpAddr+" + (i << 2).ToString() + "(a5),a6\n";
+						asmCode += "				clr.w	(a6)		; early play\n";
+						asmCode += "\n";
+					}
+
 				}
 			}
 
@@ -576,7 +605,7 @@ namespace Aklang2Asm
 			File.WriteAllText(args[1], asmCode);
 
 			Console.WriteLine("Press Any Key To Continue...");
-			Console.ReadKey();
+			WaitKey();
 		}
 
 

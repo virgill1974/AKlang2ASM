@@ -30,15 +30,21 @@ The compiled executable will land in `bin/<config>/<target>/Aklang2Asm.exe`.
 ## Usage
 
 ```bash
-Aklang2Asm <script.txt> <output.asm> [-p|-pf]
+Aklang2Asm <script.txt> <output.asm> [-p|-pf] [-e]
 ```
 
 - `script.txt` — AmigaKlang export script (see format below).
 - `output.asm` — Destination file for the generated 68k assembly.
 - `-p` — (optional) enable coarse progress (current instrument number stored via `a3`).
 - `-pf` — (optional) enable fine progress (current sample byte stored via `a3`).
+- `-e` — (optional, V1.16) early play: the first word of each sample is cleared right after
+  the sample is rendered (not only at the end), so a replayer can start while the later samples
+  are still being rendered. Samples that clone/chord/mix an earlier one then see two zero bytes
+  at its start.
 
-If no option is supplied, progress writes are disabled.
+If no option is supplied, progress writes are disabled. The header also defines `AK_TMP_LEN`,
+the size of the temporary work buffer passed in `a1`. V1.16 does not wait for a key press when
+its input is redirected (`aklang2asm ... <NUL` in batch files).
 
 ## Script format
 
@@ -96,7 +102,7 @@ shorter than 257 samples), which also saves 6 bytes per loop.
 
 The generated `output.asm` contains:
 
-- Header banner describing the tool version (currently 1.15) and usage of `AK_Generate`.
+- Header banner describing the tool version (currently 1.16) and usage of `AK_Generate`.
 - Constant section with `AK_USE_PROGRESS`, `AK_FINE_PROGRESS`, buffer sizes (`AK_SMP_LEN`, `AK_EXT_SMP_LEN`, etc.).
 - The `AK_Generate` routine, which:
   - Computes sample and external sample base addresses.
