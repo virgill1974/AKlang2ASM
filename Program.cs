@@ -161,7 +161,7 @@ namespace Aklang2Asm
 
 			asmCode += DividerCode();
 			asmCode += ";\n";
-			asmCode += "; Generated with Aklang2Asm V1.16, by Dan/Lemon. 2021-2024.\n";
+			asmCode += "; Generated with Aklang2Asm V1.17, by Dan/Lemon. 2021-2024.\n";
 			asmCode += ";\n";
 			asmCode += "; Based on Alcatraz Amigaklang rendering core. (c) Jochen 'Virgill' Feldkötter 2020.\n";
 			asmCode += ";\n";
@@ -194,6 +194,11 @@ namespace Aklang2Asm
 			asmCode += "; - Option -e (early play): the first word of each sample is cleared right after it is\n";
 			asmCode += ";   rendered, so a player can start before all samples are rendered\n";
 			asmCode += ";\n";
+			asmCode += "; What's new in V1.17?\n";
+			asmCode += "; - bytebeat(gain, formula): an unsigned 16 bit formula over t (the sample number) makes\n";
+			asmCode += ";   the sample, the low byte of the result is played (experimental)\n";
+			asmCode += "; - AK_VERSION (117) for players that need a minimum version; unknown operators give a warning\n";
+			asmCode += ";\n";
 			asmCode += "; Call 'AK_Generate' with the following registers set:\n";
 			asmCode += "; a0 = Sample Buffer Start Address\n";
 			asmCode += "; a1 = %LARGEBUFFSIZE% Bytes Temporary Work Buffer Address (can be freed after sample rendering complete)\n";
@@ -211,6 +216,7 @@ namespace Aklang2Asm
 			asmCode += "AK_SMP_LEN				equ %SAMPLESIZE%\n";
 			asmCode += "AK_EXT_SMP_LEN			equ " + externalSampleTotalLength.ToString() + "\n";
 			asmCode += "AK_TMP_LEN				equ %LARGEBUFFSIZE%\n";
+			asmCode += "AK_VERSION				equ 117\n";
 			asmCode += "\n";
 			asmCode += "AK_Generate:\n";
 			asmCode += "\n";
@@ -394,7 +400,11 @@ namespace Aklang2Asm
 
 						asmCode += "				; " + instrumentInstructions[j] + "\n";
 
-						if (instrumentInstructions[j].Contains("vol("))
+						if (instrumentInstructions[j].Contains("bytebeat("))
+						{
+							asmCode += BytebeatOp(output, instrumentInstructions[j]);
+						}
+						else if (instrumentInstructions[j].Contains("vol("))
 						{
 							asmCode += Volume(output, inputs);
 						}
@@ -489,6 +499,10 @@ namespace Aklang2Asm
 						else if (instrumentInstructions[j].Contains("adsr("))
 						{
 							asmCode += ADSR(output, inputs);
+						}
+						else
+						{
+							Console.WriteLine("Warning: unknown operator ignored: " + instrumentInstructions[j]);
 						}
 
 						asmCode += "\n";
@@ -2932,6 +2946,183 @@ namespace Aklang2Asm
 		}
 
 
+
+		// v1 = bytebeat(gain, formula) (V1.17): the formula (see Bytebeat.cs) is an unsigned 16 bit
+		// expression over t = d7.w. Its value is built in d4 (d5/d6 scratch, the left operands of
+		// nested parts on the stack), the low byte is the sample, then the gain like osc_saw.
+		static string BytebeatOp(string output, string line)
+		{
+			int open = line.IndexOf('(');
+			int close = line.LastIndexOf(')');
+			string args = line.Substring(open + 1, close - open - 1);
+			int comma = args.IndexOf(',');
+			string gain = RemapVarToRegisterOrImmediate(args.Substring(0, comma).Trim());
+			string formula = args.Substring(comma + 1);
+			Bytebeat.Node node;
+			string error;
+			if (!Bytebeat.TryParse(formula, out node, out error))
+			{
+				Console.WriteLine("Error in bytebeat formula '" + formula + "': " + error);
+				Environment.Exit(1);
+			}
+
+			string outReg = RemapVarToRegisterOrImmediate(output);
+			bytebeatLabel = 0;
+			string code = BytebeatExpr(node);
+			code += BB("lsl.w\t#8,d4");
+			code += BB("eor.w\t#$8000,d4");
+			if (gain == "#128")
+			{
+				code += BB("move.w\td4," + outReg);
+			}
+			else if (mulRightShifts.ContainsKey(gain))
+			{
+				code += BB("asr.w\t" + mulRightShifts[gain] + ",d4");
+				code += BB("move.w\td4," + outReg);
+			}
+			else
+			{
+				if (gain.Contains("#"))
+				{
+					code += BB("muls\t" + gain + ",d4");
+				}
+				else
+				{
+					code += BB("move.w\t" + gain + ",d5");
+					code += BB("and.w\t#255,d5");
+					code += BB("muls\td5,d4");
+				}
+				code += BB("asr.l\t#7,d4");
+				code += BB("move.w\td4," + outReg);
+			}
+			return code;
+		}
+
+		static int bytebeatLabel;
+
+		static string BB(string instruction)
+		{
+			return "\t\t\t\t" + instruction + "\n";
+		}
+
+		static string BytebeatLabel(string name)
+		{
+			return ".BB" + name + "_" + localLabel + "_" + (bytebeatLabel++).ToString();
+		}
+
+		// operand of a constant or t, null for other nodes
+		static string BytebeatOperand(Bytebeat.Node n)
+		{
+			if (n.Op == Bytebeat.Op.Const) return "#" + n.Value.ToString();
+			if (n.Op == Bytebeat.Op.T) return "d7";
+			return null;
+		}
+
+		// code that leaves the value of the node in d4.w (same semantics as Bytebeat.Eval)
+		static string BytebeatExpr(Bytebeat.Node n)
+		{
+			string code;
+			switch (n.Op)
+			{
+				case Bytebeat.Op.Const:
+					return BB(n.Value < 128 ? "moveq\t#" + n.Value.ToString() + ",d4" : "move.w\t#" + n.Value.ToString() + ",d4");
+				case Bytebeat.Op.T:
+					return BB("move.w\td7,d4");
+				case Bytebeat.Op.Neg:
+					return BytebeatExpr(n.A) + BB("neg.w\td4");
+				case Bytebeat.Op.Not:
+					return BytebeatExpr(n.A) + BB("not.w\td4");
+				case Bytebeat.Op.LogNot:
+					return BytebeatExpr(n.A) + BB("tst.w\td4") + BB("seq\td4") + BB("and.w\t#1,d4");
+				case Bytebeat.Op.Cond:
+					{
+						string other = BytebeatLabel("Else"), end = BytebeatLabel("End");
+						code = BytebeatExpr(n.A) + BB("tst.w\td4") + BB("beq\t" + other);
+						code += BytebeatExpr(n.B) + BB("bra\t" + end);
+						code += other + "\n" + BytebeatExpr(n.C) + end + "\n";
+						return code;
+					}
+			}
+
+			// binary: the left side in d4, the right side as operand (#value, d7) or in d5
+			string src = BytebeatOperand(n.B);
+			code = BytebeatExpr(n.A);
+			if (src == null)
+			{
+				code += BB("move.w\td4,-(sp)");
+				code += BytebeatExpr(n.B);
+				code += BB("move.w\td4,d5");
+				code += BB("move.w\t(sp)+,d4");
+				src = "d5";
+			}
+			bool imm = src.StartsWith("#");
+			int value = imm ? n.B.Value : 0;
+			switch (n.Op)
+			{
+				case Bytebeat.Op.Add: return code + BB("add.w\t" + src + ",d4");
+				case Bytebeat.Op.Sub: return code + BB("sub.w\t" + src + ",d4");
+				case Bytebeat.Op.Mul: return code + BB("mulu.w\t" + src + ",d4");
+				case Bytebeat.Op.And: return code + BB("and.w\t" + src + ",d4");
+				case Bytebeat.Op.Or: return code + BB("or.w\t" + src + ",d4");
+				case Bytebeat.Op.Xor: return code + BB("eor.w\t" + src + ",d4");
+				case Bytebeat.Op.Shl:
+				case Bytebeat.Op.Shr:
+					{
+						string shift = n.Op == Bytebeat.Op.Shl ? "lsl.w\t" : "lsr.w\t";
+						if (!imm) return code + BB(shift + src + ",d4");        // count = register mod 64
+						int count = value & 63;
+						if (count == 0) return code;
+						if (count >= 16) return code + BB("moveq\t#0,d4");
+						while (count > 8)
+						{
+							code += BB(shift + "#8,d4");
+							count -= 8;
+						}
+						return code + BB(shift + "#" + count.ToString() + ",d4");
+					}
+				case Bytebeat.Op.Div:
+				case Bytebeat.Op.Mod:
+					{
+						// 16 bit dividend zero extended: divu.w can't overflow; x/0 = x%0 = 0
+						string result = (n.Op == Bytebeat.Op.Mod ? BB("swap\td6") : "") + BB("move.w\td6,d4");
+						string divide = BB("moveq\t#0,d6") + BB("move.w\td4,d6") + BB("divu.w\t" + src + ",d6") + result;
+						if (imm) return code + (value == 0 ? BB("moveq\t#0,d4") : divide);
+						string zero = BytebeatLabel("Div0"), end = BytebeatLabel("DivEnd");
+						code += BB("tst.w\t" + src) + BB("beq.s\t" + zero) + divide + BB("bra.s\t" + end);
+						code += zero + "\n" + BB("moveq\t#0,d4") + end + "\n";
+						return code;
+					}
+				case Bytebeat.Op.LogAnd:
+				case Bytebeat.Op.LogOr:
+					{
+						bool and = n.Op == Bytebeat.Op.LogAnd;
+						if (imm)
+						{
+							// known right side: x && 0 = 0, x || 1 = 1, otherwise the left side decides
+							if (and && value == 0) return code + BB("moveq\t#0,d4");
+							if (!and && value != 0) return code + BB("moveq\t#1,d4");
+							return code + BB("tst.w\td4") + BB("sne\td4") + BB("and.w\t#1,d4");
+						}
+						code += BB("tst.w\td4") + BB("sne\td6") + BB("tst.w\t" + src) + BB("sne\td4");
+						return code + BB((and ? "and.b\t" : "or.b\t") + "d6,d4") + BB("and.w\t#1,d4");
+					}
+				default:
+					{
+						// comparisons, unsigned (d4 - src)
+						string set;
+						switch (n.Op)
+						{
+							case Bytebeat.Op.Lt: set = "scs"; break;
+							case Bytebeat.Op.Le: set = "sls"; break;
+							case Bytebeat.Op.Gt: set = "shi"; break;
+							case Bytebeat.Op.Ge: set = "scc"; break;
+							case Bytebeat.Op.Eq: set = "seq"; break;
+							default: set = "sne"; break;
+						}
+						return code + BB("cmp.w\t" + src + ",d4") + BB(set + "\td4") + BB("and.w\t#1,d4");
+					}
+			}
+		}
 
 		static string GetInstanceOffset(string value, int offsetSize)
 		{
