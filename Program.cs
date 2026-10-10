@@ -44,6 +44,7 @@ namespace Aklang2Asm
 		static bool useProgress = false;
 		static bool useFineProgress = false;
 		static bool earlyPlay = false;			// -e: a sample can be played as soon as it is rendered
+		static bool wide = false;				// -16: 16 bit samples (words) instead of 8 bit
 
 		// no key wait when started with redirected input (batch files, the AmigaKlang exe export)
 		static void WaitKey()
@@ -78,7 +79,7 @@ namespace Aklang2Asm
 
 			if (args.Length < 2)
 			{
-				Console.WriteLine("Usage: Aklang2Asm <script.txt> <output.asm> [-p|-pf] [-e]");
+				Console.WriteLine("Usage: Aklang2Asm <script.txt> <output.asm> [-p|-pf] [-e] [-16]");
 				Console.WriteLine("Press Any Key To Continue...");
 				WaitKey();
 				return;
@@ -87,6 +88,7 @@ namespace Aklang2Asm
 			useProgress = false;
 			useFineProgress = false;
 			earlyPlay = false;
+			wide = false;
 
 			for (int a = 2; a < args.Length; a++)
 			{
@@ -105,12 +107,24 @@ namespace Aklang2Asm
 				{
 					Console.WriteLine("Early play: clearing the first word of each sample right after it is rendered");
 					earlyPlay = true;
-				}
-				else
-				{
-					Console.WriteLine("Unknown option!");
-				}
-			}
+					}
+					else if ( args[a] == "-16" )
+					{
+						Console.WriteLine("16 bit samples");
+						wide = true;
+					}
+					else
+					{
+						Console.WriteLine("Unknown option!");
+					}
+					}
+
+					if (wide && earlyPlay)
+					{
+						// early play is for the 8 bit player of the Amiga exe (Paula repeats the first word)
+						Console.WriteLine("Error: -16 and -e cannot be used together");
+						return;
+					}
 
 			if (!File.Exists(args[0]))
 			{
@@ -161,7 +175,7 @@ namespace Aklang2Asm
 
 			asmCode += DividerCode();
 			asmCode += ";\n";
-			asmCode += "; Generated with Aklang2Asm V1.17, by Dan/Lemon. 2021-2024.\n";
+			asmCode += "; Generated with Aklang2Asm V1.18, by Dan/Lemon. 2021-2024.\n";
 			asmCode += ";\n";
 			asmCode += "; Based on Alcatraz Amigaklang rendering core. (c) Jochen 'Virgill' Feldkötter 2020.\n";
 			asmCode += ";\n";
@@ -199,8 +213,14 @@ namespace Aklang2Asm
 			asmCode += ";   the sample, the low byte of the result is played (experimental)\n";
 			asmCode += "; - AK_VERSION (117) for players that need a minimum version; unknown operators give a warning\n";
 			asmCode += ";\n";
+			asmCode += "; What's new in V1.18?\n";
+			asmCode += "; - Option -16: AK_Generate renders 16 bit samples (signed words, AK_16BIT equ 1). The\n";
+			asmCode += ";   sample buffer is twice as large (AK_SMP_LEN), clone, chord generator, sample mixer and\n";
+			asmCode += ";   loop generator work on the 16 bit samples, the first word of a sample is not cleared.\n";
+			asmCode += ";   External samples stay 8 bit. Lengths (AK_SmpLen, progress) count samples in both modes.\n";
+			asmCode += ";\n";
 			asmCode += "; Call 'AK_Generate' with the following registers set:\n";
-			asmCode += "; a0 = Sample Buffer Start Address\n";
+			asmCode += "; a0 = Sample Buffer Start Address (AK_SMP_LEN bytes)\n";
 			asmCode += "; a1 = %LARGEBUFFSIZE% Bytes Temporary Work Buffer Address (can be freed after sample rendering complete)\n";
 			asmCode += "; a2 = External Samples Address (need not be in chip memory, and can be freed after sample rendering complete)\n";
 			asmCode += "; a3 = Rendering Progress Address (2 modes available... see below)\n";
@@ -216,7 +236,8 @@ namespace Aklang2Asm
 			asmCode += "AK_SMP_LEN				equ %SAMPLESIZE%\n";
 			asmCode += "AK_EXT_SMP_LEN			equ " + externalSampleTotalLength.ToString() + "\n";
 			asmCode += "AK_TMP_LEN				equ %LARGEBUFFSIZE%\n";
-			asmCode += "AK_VERSION				equ 117\n";
+			asmCode += "AK_VERSION				equ 118\n";
+			asmCode += "AK_16BIT				equ " + ( wide ? "1" : "0" ) + "		; 1 = 16 bit samples (signed words)\n";
 			asmCode += "\n";
 			asmCode += "AK_Generate:\n";
 			asmCode += "\n";
@@ -236,6 +257,8 @@ namespace Aklang2Asm
 			asmCode += "				move.l	a0,d0\n";
 			asmCode += "				moveq	#31-1,d7\n";
 			asmCode += ".SmpAdrLoop		move.l	d0,(a4)+\n";
+			if (wide)
+				asmCode += "				add.l	(a6),d0			; 16 bit: two bytes per sample\n";
 			asmCode += "				add.l	(a6)+,d0\n";
 			asmCode += "				dbra	d7,.SmpAdrLoop\n";
 			if (!externalAdpcm)
@@ -324,17 +347,18 @@ namespace Aklang2Asm
 					int tempInt = int.Parse(instrumentLength[i]);
 					if (tempInt != 0)
 					{
-						if (tempInt <= 8)
+						int skip = wide ? tempInt * 2 : tempInt;			// bytes of the sample
+						if (skip <= 8)
 						{
-							asmCode += "				addq.w	#" + instrumentLength[i] + ",a0\n";
+							asmCode += "				addq.w	#" + skip.ToString() + ",a0\n";
 						}
-						else if (tempInt <= 32767)
+						else if (skip <= 32767)
 						{
-							asmCode += "				lea		" + instrumentLength[i] + "(a0),a0\n";
+							asmCode += "				lea		" + skip.ToString() + "(a0),a0\n";
 						}
 						else
 						{
-							asmCode += "				add.l	#" + instrumentLength[i] + ",a0\n";
+							asmCode += "				add.l	#" + skip.ToString() + ",a0\n";
 						}
 
 						if (tempInt <= 8)
@@ -508,8 +532,15 @@ namespace Aklang2Asm
 						asmCode += "\n";
 					}
 
-					asmCode += "				asr.w	#8,d0\n";
-					asmCode += "				move.b	d0,(a0)+\n";
+					if (wide)
+					{
+						asmCode += "				move.w	d0,(a0)+\n";
+					}
+					else
+					{
+						asmCode += "				asr.w	#8,d0\n";
+						asmCode += "				move.b	d0,(a0)+\n";
+					}
 					asmCode += "				ifne	AK_USE_PROGRESS\n";
 					asmCode += "					ifne	AK_FINE_PROGRESS\n";
 					asmCode += "						addq.l	#1,(a3)\n";
@@ -578,14 +609,18 @@ namespace Aklang2Asm
 			asmCode += DividerCode();
 			asmCode += "\n";
 
-			asmCode += "				; Clear first 2 bytes of each sample\n";
-			asmCode += "				lea		AK_SmpAddr(a5),a6\n";
-			asmCode += "				moveq	#0,d0\n";
-			asmCode += "				moveq	#31-1,d7\n";
-			asmCode += ".SmpClrLoop		move.l	(a6)+,a4\n";
-			asmCode += "				move.b	d0,(a4)+\n";
-			asmCode += "				move.b	d0,(a4)+\n";
-			asmCode += "				dbra	d7,.SmpClrLoop\n";
+			if (!wide)
+			{
+				// (16 bit samples stay complete: they are not played by Paula, which repeats the first word)
+				asmCode += "				; Clear first 2 bytes of each sample\n";
+				asmCode += "				lea		AK_SmpAddr(a5),a6\n";
+				asmCode += "				moveq	#0,d0\n";
+				asmCode += "				moveq	#31-1,d7\n";
+				asmCode += ".SmpClrLoop		move.l	(a6)+,a4\n";
+				asmCode += "				move.b	d0,(a4)+\n";
+				asmCode += "				move.b	d0,(a4)+\n";
+				asmCode += "				dbra	d7,.SmpClrLoop\n";
+			}
 
 			asmCode += "\n";
 			asmCode += "				rts\n";
@@ -607,7 +642,7 @@ namespace Aklang2Asm
 			asmCode += DividerCode();
 
 
-			asmCode = asmCode.Replace("%SAMPLESIZE%", sampleTotalLength.ToString());
+			asmCode = asmCode.Replace("%SAMPLESIZE%", (wide ? sampleTotalLength * 2 : sampleTotalLength).ToString());
 			asmCode = asmCode.Replace("%FINEPROGRESSLEN%", fineProgressLength.ToString());
 
 			asmCode = asmCode.Replace("%LARGEBUFFSIZE%", (maxLargeBufferInstance * 4096).ToString());
@@ -2325,6 +2360,9 @@ namespace Aklang2Asm
 
 			string code = string.Empty;
 
+			if (wide)
+				return ChordGenWide(outReg, instance, basesample, note1, note2, note3, shift, shiftInt);
+
 			code += "				move.l	AK_SmpAddr+@BS(a5),a4\n";
 			code += "				move.b	(a4,d7.l),d6\n";
 			//code += "				ext.w	d6\n";
@@ -2431,6 +2469,91 @@ namespace Aklang2Asm
 			return code;
 		}
 
+		// 16 bit samples (-16): half of every voice is summed in 32 bit and limited to 16 bit, the
+		// positions (16.16 counters) are the same as for 8 bit samples
+		static string ChordGenWide(string outReg, string instance, string basesample, string note1, string note2, string note3, string shift, int shiftInt)
+		{
+			string code = string.Empty;
+
+			code += "				move.l	AK_SmpAddr+@BS(a5),a4\n";
+			code += "				add.l	d7,a4\n";
+			code += "				move.w	(a4,d7.l),d6\n";
+			code += "				asr.w	#1,d6\n";
+			code += "				ext.l	d6\n";
+			code += "				move.l	AK_SmpAddr+@BS(a5),a4\n";
+
+			if (!shift.Contains("#"))
+			{
+				code += "				move.w	@SH,d4\n";
+				code += "				and.w	#255,d4\n";
+				code += "				add.w	d4,a4\n";
+				code += "				add.w	d4,a4\n";
+			}
+			else if (shiftInt != 0)
+			{
+				if (shiftInt * 2 <= 8)
+					code += "				addq.w	#" + (shiftInt * 2).ToString() + ",a4\n";
+				else
+					code += "				add.w	#" + (shiftInt * 2).ToString() + ",a4\n";
+			}
+
+			string[] notes = { note1, note2, note3 };
+			for (int n = 0; n < 3; n++)
+			{
+				if (notes[n] == "#0") continue;
+				if (n >= 1 && notes[n] == notes[0]) continue;
+				if (n == 2 && notes[n] == notes[1]) continue;
+				string counter = "AK_OpInstance+AK_CHORD" + (n + 1).ToString() + "+@IN(a5)";
+				code += "				moveq	#0,d4\n";
+				code += "				move.w	" + counter + ",d4\n";
+				code += "				add.l	" + notes[n] + "," + counter + "\n";
+				code += "				add.l	d4,d4\n";
+				code += "				move.w	(a4,d4.l),d5\n";
+				code += "				asr.w	#1,d5\n";
+				code += "				ext.l	d5\n";
+				code += "				add.l	d5,d6\n";
+			}
+
+			code += "				cmp.l	#32767,d6\n";
+			code += "				ble.s	.NoClampMaxChord_" + localLabel + "\n";
+			code += "				move.w	#32767,d6\n";
+			code += "				bra.s	.NoClampMinChord_" + localLabel + "\n";
+			code += ".NoClampMaxChord_" + localLabel + "\n";
+			code += "				cmp.l	#-32768,d6\n";
+			code += "				bge.s	.NoClampMinChord_" + localLabel + "\n";
+			code += "				move.w	#-32768,d6\n";
+			code += ".NoClampMinChord_" + localLabel + "\n";
+			code += "				move.w	d6,@OR\n";
+
+			code = code.Replace("@OR", outReg);
+			code = code.Replace("@IN", instance);
+			code = code.Replace("@BS", basesample);
+			code = code.Replace("@SH", shift);
+
+			currentWordInstance += 6;
+
+			return code;
+		}
+
+		// reads the sample at a4 + index (+ the samples in "before": "" or "-1") of an instrument rendered
+		// before as a 16 bit value. 8 bit: the byte << 8. 16 bit (-16): the word; the 68000 has no scaled
+		// index, so the index is added to a4 first.
+		static string ReadSample(string index, string before, string target)
+		{
+			string code = string.Empty;
+			if (wide)
+			{
+				code += "				add.l	" + index + ",a4\n";
+				code += "				move.w	" + (before == "" ? "" : (int.Parse(before) * 2).ToString()) + "(a4," + index + ".l)," + target + "\n";
+			}
+			else
+			{
+				code += "				move.b	" + before + "(a4," + index + ".l)," + target + "\n";
+				code += "				asl.w	#8," + target + "\n";
+			}
+			return code;
+		}
+
 		static string Clone(string output, string[] inputs)
 		{
 			//short clone(int smp, int instrument, int offset)
@@ -2469,11 +2592,7 @@ namespace Aklang2Asm
 				code += "				cmp.l	AK_SmpLen+@BS(a5),d7\n";
 			code += "				bge.s	.NoClone_" + localLabel + "\n";
 			code += "				move.l	AK_SmpAddr+@BS(a5),a4\n";
-			if (offsetInt > 0)
-				code += "				move.b	(a4,d6.l),@OR\n";
-			else
-				code += "				move.b	(a4,d7.l),@OR\n";
-			code += "				asl.w	#8,@OR\n";
+			code += ReadSample(offsetInt > 0 ? "d6" : "d7", "", "@OR");
 			code += ".NoClone_" + localLabel + "\n";
 
 			code = code.Replace("@OR", outReg);
@@ -2519,8 +2638,7 @@ namespace Aklang2Asm
 			code += "				bge.s	.NoCloneR_" + localLabel + "\n";
 			code += "				move.l	AK_SmpAddr+@BS+4(a5),a4\n";
 			code += "				neg.l	d6\n";
-			code += "				move.b	-1(a4,d6.l),@OR\n";
-			code += "				asl.w	#8,@OR\n";
+			code += ReadSample("d6", "-1", "@OR");
 			code += ".NoCloneR_" + localLabel + "\n";
 
 			code = code.Replace("@OR", outReg);
@@ -2590,16 +2708,15 @@ namespace Aklang2Asm
 			}
 			if (!reverse)
 			{
-				code += "				move.l	AK_SmpAddr+@BS(a5),a4\n";
-				code += "				move.b	(a4,d6.l),@OR\n";
-			}
-			else
-			{
-				code += "				move.l	AK_SmpAddr+@BS+4(a5),a4\n";
-				code += "				neg.l	d6\n";
-				code += "				move.b	-1(a4,d6.l),@OR\n";
-			}
-			code += "				asl.w	#8,@OR\n";
+					code += "				move.l	AK_SmpAddr+@BS(a5),a4\n";
+					code += ReadSample("d6", "", "@OR");
+				}
+				else
+				{
+					code += "				move.l	AK_SmpAddr+@BS+4(a5),a4\n";
+					code += "				neg.l	d6\n";
+					code += ReadSample("d6", "-1", "@OR");
+				}
 			code += ".NoCloneT_" + localLabel + "\n";
 
 			code = code.Replace("@OR", outReg);
@@ -2695,8 +2812,16 @@ namespace Aklang2Asm
 				code += "				cmp.l	" + Var(v + 4) + ",d6\n";
 				code += "				bge.s	.MixVoice" + t.ToString() + "_" + localLabel + "\n";
 				code += "				move.l	" + Var(v) + ",a4\n";
-				code += "				move.b	(a4,d6.l),d4\n";
-				code += "				ext.w	d4\n";
+				if (wide)
+				{
+					code += "				add.l	d6,a4\n";
+					code += "				move.w	(a4,d6.l),d4\n";
+				}
+				else
+				{
+					code += "				move.b	(a4,d6.l),d4\n";
+					code += "				ext.w	d4\n";
+				}
 				code += "				muls	" + Var(v + 16) + ",d4\n";
 				code += "				add.l	d4,d5\n";
 				code += "				move.l	" + Var(v + 12) + ",d6\n";
@@ -2704,8 +2829,8 @@ namespace Aklang2Asm
 				code += ".MixVoice" + t.ToString() + "_" + localLabel + "\n";
 			}
 
-			// * 4, clamp to 16 bit
-			code += "				asl.l	#2,d5\n";
+			// * 4 (16 bit samples: / 64), clamp to 16 bit
+			code += wide ? "				asr.l	#6,d5\n" : "				asl.l	#2,d5\n";
 			code += "				cmp.l	#32767,d5\n";
 			code += "				ble.s	.MixNoMax_" + localLabel + "\n";
 			code += "				move.w	#32767,d5\n";
@@ -2895,11 +3020,13 @@ namespace Aklang2Asm
 
 			code += fade <= 127 ? "				moveq	#@FD,d7\n" : "				move.l	#@FD,d7\n";
 			code += "				move.l	AK_SmpAddr+@IN(a5),a0\n";
-			if (start < 32768)
+			// 16 bit samples: the offsets in bytes are twice as large
+			int startBytes = wide ? start * 2 : start, repLenBytes = wide ? repLenInt * 2 : repLenInt;
+			if (startBytes < 32768)
 				code += "				lea		@ST(a0),a0\n";
 			else
 				code += "				add.l	#@ST,a0\n";
-			if (repLenInt <= 32768)
+			if (repLenBytes <= 32768)
 				code += "				lea		-@RL(a0),a1\n";
 			else
 			{
@@ -2914,16 +3041,24 @@ namespace Aklang2Asm
 			code += "				asr.l	#8,d2\n";
 			code += "				move.l	d5,d3\n";
 			code += "				asr.l	#8,d3\n";
-			code += "				move.b	(a0),d0\n";
-			code += "				move.b	(a1)+,d1\n";
-			code += "				ext.w	d0\n";
-			code += "				ext.w	d1\n";
+			if (wide)
+			{
+				code += "				move.w	(a0),d0\n";
+				code += "				move.w	(a1)+,d1\n";
+			}
+			else
+			{
+				code += "				move.b	(a0),d0\n";
+				code += "				move.b	(a1)+,d1\n";
+				code += "				ext.w	d0\n";
+				code += "				ext.w	d1\n";
+			}
 			code += "				muls	d3,d0\n";
 			code += "				muls	d2,d1\n";
 			code += "				add.l	d1,d0\n";
 			code += "				add.l	d0,d0\n";
 			code += "				swap	d0\n";
-			code += "				move.b	d0,(a0)+\n";
+			code += wide ? "				move.w	d0,(a0)+\n" : "				move.b	d0,(a0)+\n";
 			code += "				add.l	d6,d4\n";
 			code += "				sub.l	d6,d5\n";
 			code += "\n";
@@ -2938,8 +3073,8 @@ namespace Aklang2Asm
 
 			code = code.Replace("@IN", instr);
 			code = code.Replace("@FD", fade.ToString());
-			code = code.Replace("@ST", start.ToString());
-			code = code.Replace("@RL", repeat_length);
+			code = code.Replace("@ST", startBytes.ToString());
+			code = code.Replace("@RL", repLenBytes.ToString());
 			code = code.Replace("@DT", delta.ToString());
 
 			return code;

@@ -8,6 +8,7 @@ AKlang2Asm converts an AmigaKlang patch script into a fully expanded Motorola 68
 
 - Parses AmigaKlang script files and emits ready-to-assemble 68k source code.
 - Supports progress reporting (`-p` byte-level per instrument, `-pf` fine progress per sample byte).
+- Renders 8 bit samples or, with `-16`, 16 bit samples (V1.18).
 - Automatically calculates sample lengths, loop offsets, large buffer requirements, and maximum operator instance counts.
 - Converts embedded external samples from delta encoding back to absolute form.
 - Generates helper data (`AK_Vars`, decay tables, buffer declarations) so the output can be dropped into a demo/mod production without extra glue code.
@@ -30,7 +31,7 @@ The compiled executable will land in `bin/<config>/<target>/Aklang2Asm.exe`.
 ## Usage
 
 ```bash
-Aklang2Asm <script.txt> <output.asm> [-p|-pf] [-e]
+Aklang2Asm <script.txt> <output.asm> [-p|-pf] [-e] [-16]
 ```
 
 - `script.txt` — AmigaKlang export script (see format below).
@@ -41,10 +42,34 @@ Aklang2Asm <script.txt> <output.asm> [-p|-pf] [-e]
   the sample is rendered (not only at the end), so a replayer can start while the later samples
   are still being rendered. Samples that clone/chord/mix an earlier one then see two zero bytes
   at its start.
+- `-16` — (optional, V1.18) 16 bit samples, see below. Not together with `-e`.
 
 If no option is supplied, progress writes are disabled. The header also defines `AK_TMP_LEN`,
 the size of the temporary work buffer passed in `a1`. V1.16 does not wait for a key press when
 its input is redirected (`aklang2asm ... <NUL` in batch files).
+
+## 16 bit samples (`-16`, V1.18)
+
+With `-16` the generated `AK_Generate` renders every instrument as signed 16 bit words (big
+endian) instead of bytes. Without the switch the code is the same as in V1.17.
+
+- `v1` is written as a word (`move.w d0,(a0)+`); the 8 bit code writes its high byte.
+- A sample of `length` samples takes `2 * length` bytes; `AK_SMP_LEN` (the size of the sample
+  buffer in `a0`) is twice the sum of the lengths. The lengths and loop offsets of the script
+  stay in samples.
+- `clone`, `clone_reverse` (also with transpose), `chordgen`, `samplemixer` and the loop
+  generator read and write words, so nothing of the 16 bit is lost on the way:
+  `chordgen` sums the halved words of its voices in 32 bit and clamps, `samplemixer` sums
+  `sample * volume` of its voices and divides the sum by 64 once, the loop generator does its
+  crossfade on words.
+- `imported_sample` (also ADPCM) is unchanged: imported samples are 8 bit, `<< 8`.
+- Nothing is cleared at the start of a sample (the 8 bit code clears its first two bytes for
+  ProTracker).
+- `-e` (early play of the Amiga player, which plays 8 bit) is rejected together with `-16`.
+
+The header defines `AK_16BIT equ 1` (`0` without the switch), so a player can check what it
+got. The AmigaKlang editor renders the same samples for "Export Samples to XM" and writes this
+source with "Export ASM Source (16 bit)".
 
 ## Script format
 
@@ -104,8 +129,8 @@ The formula is compiled into `.w` code on `d4` (`d5`/`d6` and the stack as scrat
 `Bytebeat.cs` holds parser and semantics; the AmigaKlang editor uses the same file, so the
 editor preview and the Amiga render the same samples.
 
-V1.17 also defines `AK_VERSION equ 117` in the header (players can check for a minimum
-version) and prints a warning for script lines with an unknown operator instead of silently
+V1.17 also defines `AK_VERSION equ 117` (V1.18: `118`) in the header (players can check for a
+minimum version) and prints a warning for script lines with an unknown operator instead of silently
 skipping them.
 
 Loop generator (V1.14): the last `min(repeat length, repeat offset)` samples of the loop are
@@ -118,7 +143,7 @@ shorter than 257 samples), which also saves 6 bytes per loop.
 
 The generated `output.asm` contains:
 
-- Header banner describing the tool version (currently 1.17) and usage of `AK_Generate`.
+- Header banner describing the tool version (currently 1.18) and usage of `AK_Generate`.
 - Constant section with `AK_USE_PROGRESS`, `AK_FINE_PROGRESS`, buffer sizes (`AK_SMP_LEN`, `AK_EXT_SMP_LEN`, etc.).
 - The `AK_Generate` routine, which:
   - Computes sample and external sample base addresses.
@@ -126,7 +151,7 @@ The generated `output.asm` contains:
   - Per-instrument rendering loops (`movem/add/asr/...` sequences for each operator).
   - Loop generator code when `loopFlag == Y`.
   - Delta decoding of imported samples when present.
-  - Final two-byte clearing pass for all samples.
+  - Final two-byte clearing pass for all samples (not with `-16`).
 - Support routines `AK_ResetVars`, `AK_ClearVars`, decay tables, RNG seeds, ADSR state, and other persistent variables.
 
 Registers expected on entry (summarized from the header comments):
