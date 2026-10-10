@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.IO;
 using System.Threading.Tasks;
 
@@ -45,6 +46,10 @@ namespace Aklang2Asm
 		static bool useFineProgress = false;
 		static bool earlyPlay = false;			// -e: a sample can be played as soon as it is rendered
 		static bool wide = false;				// -16: 16 bit samples (words) instead of 8 bit
+		// -unz: 16 bit samples, one routine per instrument for the UNZ player of Platon42 (see UnzMap)
+		static bool unz = false;
+		static List<int> unzInstruments = new List<int>();				// instruments with a routine (1 based)
+		static Dictionary<int, SortedSet<int>> unzDepends = new Dictionary<int, SortedSet<int>>();	// the samples they read
 
 		// no key wait when started with redirected input (batch files, the AmigaKlang exe export)
 		static void WaitKey()
@@ -79,7 +84,7 @@ namespace Aklang2Asm
 
 			if (args.Length < 2)
 			{
-				Console.WriteLine("Usage: Aklang2Asm <script.txt> <output.asm> [-p|-pf] [-e] [-16]");
+				Console.WriteLine("Usage: Aklang2Asm <script.txt> <output.asm> [-p|-pf] [-e] [-16|-unz]");
 				Console.WriteLine("Press Any Key To Continue...");
 				WaitKey();
 				return;
@@ -107,24 +112,36 @@ namespace Aklang2Asm
 				{
 					Console.WriteLine("Early play: clearing the first word of each sample right after it is rendered");
 					earlyPlay = true;
-					}
-					else if ( args[a] == "-16" )
-					{
-						Console.WriteLine("16 bit samples");
-						wide = true;
-					}
-					else
-					{
-						Console.WriteLine("Unknown option!");
-					}
-					}
+				}
+				else if ( args[a] == "-16" )
+				{
+					Console.WriteLine("16 bit samples");
+					wide = true;
+				}
+				else if ( args[a] == "-unz" )
+				{
+					Console.WriteLine("16 bit samples, one routine per instrument (UNZ player)");
+					wide = true;
+					unz = true;
+				}
+				else
+				{
+					Console.WriteLine("Unknown option!");
+				}
+			}
 
-					if (wide && earlyPlay)
-					{
-						// early play is for the 8 bit player of the Amiga exe (Paula repeats the first word)
-						Console.WriteLine("Error: -16 and -e cannot be used together");
-						return;
-					}
+			if (wide && earlyPlay)
+			{
+				// early play is for the 8 bit player of the Amiga exe (Paula repeats the first word)
+				Console.WriteLine("Error: -16 and -e cannot be used together");
+				return;
+			}
+			if (unz && useProgress)
+			{
+				// the routines of -unz have no progress pointer (a3 is their scratch register)
+				Console.WriteLine("Error: -unz and -p/-pf cannot be used together");
+				return;
+			}
 
 			if (!File.Exists(args[0]))
 			{
@@ -175,7 +192,7 @@ namespace Aklang2Asm
 
 			asmCode += DividerCode();
 			asmCode += ";\n";
-			asmCode += "; Generated with Aklang2Asm V1.18, by Dan/Lemon. 2021-2024.\n";
+			asmCode += "; Generated with Aklang2Asm V1.19, by Dan/Lemon. 2021-2024.\n";
 			asmCode += ";\n";
 			asmCode += "; Based on Alcatraz Amigaklang rendering core. (c) Jochen 'Virgill' Feldkötter 2020.\n";
 			asmCode += ";\n";
@@ -219,6 +236,17 @@ namespace Aklang2Asm
 			asmCode += ";   loop generator work on the 16 bit samples, the first word of a sample is not cleared.\n";
 			asmCode += ";   External samples stay 8 bit. Lengths (AK_SmpLen, progress) count samples in both modes.\n";
 			asmCode += ";\n";
+			asmCode += "; What's new in V1.19?\n";
+			asmCode += "; - Option -unz: 16 bit samples for the UNZ player of Platon42: one routine per instrument\n";
+			asmCode += ";   (ak_generate_instrument_N), variables and sample addresses in the structure of the player\n";
+			asmCode += ";\n";
+			if (unz)
+			{
+				asmCode += UnzHeaderCode();
+			}
+			else
+			{
+			// (AK_Generate and its setup, not indented)
 			asmCode += "; Call 'AK_Generate' with the following registers set:\n";
 			asmCode += "; a0 = Sample Buffer Start Address (AK_SMP_LEN bytes)\n";
 			asmCode += "; a1 = %LARGEBUFFSIZE% Bytes Temporary Work Buffer Address (can be freed after sample rendering complete)\n";
@@ -236,7 +264,7 @@ namespace Aklang2Asm
 			asmCode += "AK_SMP_LEN				equ %SAMPLESIZE%\n";
 			asmCode += "AK_EXT_SMP_LEN			equ " + externalSampleTotalLength.ToString() + "\n";
 			asmCode += "AK_TMP_LEN				equ %LARGEBUFFSIZE%\n";
-			asmCode += "AK_VERSION				equ 118\n";
+			asmCode += "AK_VERSION				equ 119\n";
 			asmCode += "AK_16BIT				equ " + ( wide ? "1" : "0" ) + "		; 1 = 16 bit samples (signed words)\n";
 			asmCode += "\n";
 			asmCode += "AK_Generate:\n";
@@ -305,6 +333,7 @@ namespace Aklang2Asm
 				asmCode += "				dbra	d7,.DeltaLoop\n";
 				asmCode += "\n";
 			}
+			}
 
 
 			// Iterate Instruments
@@ -338,7 +367,12 @@ namespace Aklang2Asm
 					}
 				}
 
-				if (instrumentInstructions.Count == 0)
+				if (instrumentInstructions.Count == 0 && unz)
+				{
+					// no routine and no memory for an empty instrument
+					instrumentLengthInt[i] = 0;
+				}
+				else if (instrumentInstructions.Count == 0)
 				{
 					asmCode += DividerCode();
 					asmCode += "; Empty Instrument\n";
@@ -386,11 +420,17 @@ namespace Aklang2Asm
 				}
 				else
 				{
+					int instrumentStart = asmCode.Length;
+					if (unz)
+						asmCode += "ak_generate_instrument_" + (i + 1).ToString() + ":\n";
 					asmCode += DividerCode();
 					asmCode += "; Instrument " + (i + 1).ToString() + " - " + instrumentName[i] + "\n";
 					asmCode += DividerCode();
 					asmCode += "\n";
-					if (i == 0)
+					if (unz)
+						// the routines can be called in any order: each one clears its own delay buffers
+						asmCode += "				moveq	#%UNZBUFFERS%,d0\n";
+					else if (i == 0)
 						asmCode += "				moveq	#%MAXLARGEBUFFERINSTANCES%,d0\n";
 					else
 						asmCode += "				moveq	#" + currentLargeBufferInstance.ToString() + ",d0\n";
@@ -551,7 +591,10 @@ namespace Aklang2Asm
 					asmCode += "				blt		.Inst" + (i + 1).ToString() + "Loop\n";
 					asmCode += "\n";
 
-					if (instrumentLoop[i] == "Y")
+					if (unz)
+						asmCode = asmCode.Substring(0, instrumentStart) + asmCode.Substring(instrumentStart).Replace("%UNZBUFFERS%", currentLargeBufferInstance.ToString());
+
+					if (instrumentLoop[i] == "Y" && !unz)
 					{
 						asmCode += "				movem.l a0-a1,-(sp)	;Stash sample base address & large buffer address for loop generator\n";
 					}
@@ -581,8 +624,11 @@ namespace Aklang2Asm
 							asmCode += "\n";
 							asmCode += LoopGenerator(instrumentRepeatLength[i], instrumentRepeatOffset[i], i.ToString());
 							asmCode += "\n";
-							asmCode += "				movem.l (sp)+,a0-a1	;Restore sample base address & large buffer address after loop generator\n";
-							asmCode += "\n";
+							if (!unz)
+							{
+								asmCode += "				movem.l (sp)+,a0-a1	;Restore sample base address & large buffer address after loop generator\n";
+								asmCode += "\n";
+							}
 						}
 					}
 
@@ -592,6 +638,23 @@ namespace Aklang2Asm
 						// so the music can already play this sample while the next ones are rendered
 						asmCode += "				move.l	AK_SmpAddr+" + (i << 2).ToString() + "(a5),a6\n";
 						asmCode += "				clr.w	(a6)		; early play\n";
+						asmCode += "\n";
+					}
+
+					if (unz)
+					{
+						// the routine ends here; the samples it reads have to be rendered before it
+						if (instrumentLoop[i] != "Y" && asmCode.EndsWith("\n\n"))
+							asmCode = asmCode.Substring(0, asmCode.Length - 1);
+						var sources = new SortedSet<int>();
+						foreach (Match m in Regex.Matches(asmCode.Substring(instrumentStart), @"AK_SmpAddr\+(\d+)"))
+						{
+							int source = int.Parse(m.Groups[1].Value) / 4 + 1;
+							if (source != i + 1) sources.Add(source);
+						}
+						unzInstruments.Add(i + 1);
+						unzDepends[i + 1] = sources;
+						asmCode += "				rts\n";
 						asmCode += "\n";
 					}
 
@@ -609,7 +672,7 @@ namespace Aklang2Asm
 			asmCode += DividerCode();
 			asmCode += "\n";
 
-			if (!wide)
+			if (!wide && !unz)
 			{
 				// (16 bit samples stay complete: they are not played by Paula, which repeats the first word)
 				asmCode += "				; Clear first 2 bytes of each sample\n";
@@ -622,12 +685,15 @@ namespace Aklang2Asm
 				asmCode += "				dbra	d7,.SmpClrLoop\n";
 			}
 
-			asmCode += "\n";
-			asmCode += "				rts\n";
+			if (!unz)
+			{
+				asmCode += "\n";
+				asmCode += "				rts\n";
 
-			asmCode += "\n";
-			asmCode += DividerCode();
-			asmCode += "\n";
+				asmCode += "\n";
+				asmCode += DividerCode();
+				asmCode += "\n";
+			}
 			asmCode += ClearVarsCode();
 			if (usedAdpcm)
 			{
@@ -637,9 +703,20 @@ namespace Aklang2Asm
 			asmCode += "\n";
 			asmCode += DividerCode();
 			asmCode += "\n";
-			asmCode += VarsCode();
-			asmCode += "\n";
-			asmCode += DividerCode();
+			if (unz)
+			{
+				asmCode = UnzMap(asmCode);
+				asmCode += UnzVarsCode();
+				asmCode += "\n";
+				asmCode += DividerCode();
+				asmCode += UnzGeneratorsCode();
+			}
+			else
+			{
+				asmCode += VarsCode();
+				asmCode += "\n";
+				asmCode += DividerCode();
+			}
 
 
 			asmCode = asmCode.Replace("%SAMPLESIZE%", (wide ? sampleTotalLength * 2 : sampleTotalLength).ToString());
@@ -2475,12 +2552,32 @@ namespace Aklang2Asm
 		{
 			string code = string.Empty;
 
-			code += "				move.l	AK_SmpAddr+@BS(a5),a4\n";
-			code += "				add.l	d7,a4\n";
-			code += "				move.w	(a4,d7.l),d6\n";
-			code += "				asr.w	#1,d6\n";
-			code += "				ext.l	d6\n";
-			code += "				move.l	AK_SmpAddr+@BS(a5),a4\n";
+			// -unz: the samples of the player are not one behind the other, so a voice that has passed
+			// the end of the source is silent (AK_Generate reads the memory behind the source there).
+			// a6 = length of the source - shift, the limit of the voice positions
+			if (unz)
+			{
+				code += "				move.l	AK_SmpAddr+@BS(a5),a4\n";
+				code += "				move.l	AK_SmpLen+@BS(a5),a6\n";
+				code += "				moveq	#0,d6\n";
+				code += "				cmp.l	a6,d7\n";
+				code += "				bge.s	.ChordEnd0_" + localLabel + "\n";
+				code += "				add.l	d7,a4\n";
+				code += "				move.w	(a4,d7.l),d6\n";
+				code += "				asr.w	#1,d6\n";
+				code += "				ext.l	d6\n";
+				code += "				sub.l	d7,a4\n";
+				code += ".ChordEnd0_" + localLabel + "\n";
+			}
+			else
+			{
+				code += "				move.l	AK_SmpAddr+@BS(a5),a4\n";
+				code += "				add.l	d7,a4\n";
+				code += "				move.w	(a4,d7.l),d6\n";
+				code += "				asr.w	#1,d6\n";
+				code += "				ext.l	d6\n";
+				code += "				move.l	AK_SmpAddr+@BS(a5),a4\n";
+			}
 
 			if (!shift.Contains("#"))
 			{
@@ -2488,6 +2585,8 @@ namespace Aklang2Asm
 				code += "				and.w	#255,d4\n";
 				code += "				add.w	d4,a4\n";
 				code += "				add.w	d4,a4\n";
+				if (unz)
+					code += "				sub.w	d4,a6\n";
 			}
 			else if (shiftInt != 0)
 			{
@@ -2495,6 +2594,8 @@ namespace Aklang2Asm
 					code += "				addq.w	#" + (shiftInt * 2).ToString() + ",a4\n";
 				else
 					code += "				add.w	#" + (shiftInt * 2).ToString() + ",a4\n";
+				if (unz)
+					code += "				sub.w	#" + shiftInt.ToString() + ",a6\n";
 			}
 
 			string[] notes = { note1, note2, note3 };
@@ -2507,11 +2608,18 @@ namespace Aklang2Asm
 				code += "				moveq	#0,d4\n";
 				code += "				move.w	" + counter + ",d4\n";
 				code += "				add.l	" + notes[n] + "," + counter + "\n";
+				if (unz)
+				{
+					code += "				cmp.l	a6,d4\n";
+					code += "				bge.s	.ChordEnd" + (n + 1).ToString() + "_" + localLabel + "\n";
+				}
 				code += "				add.l	d4,d4\n";
 				code += "				move.w	(a4,d4.l),d5\n";
 				code += "				asr.w	#1,d5\n";
 				code += "				ext.l	d5\n";
 				code += "				add.l	d5,d6\n";
+				if (unz)
+					code += ".ChordEnd" + (n + 1).ToString() + "_" + localLabel + "\n";
 			}
 
 			code += "				cmp.l	#32767,d6\n";
@@ -3416,6 +3524,183 @@ namespace Aklang2Asm
 
 			return code;
 		}
+		// ---- -unz: the output for the UNZ player of Platon42 -------------------------------------
+		// His ExemusicConv.kt made 16 bit code of the 8 bit output of V1.1; -unz writes that form: no
+		// AK_Generate and no progress, a routine per instrument instead (a0 = its sample, a1 = work
+		// buffer), the variables and the tables of the sample addresses in the structure of the player
+		// (a6), a3 as scratch register. The operator code is the code of -16.
+
+		static string UnzHeaderCode()
+		{
+			string code = string.Empty;
+
+			code += "; Option -unz: 16 bit samples (signed words), one routine per instrument.\n";
+			code += "; Call 'ak_generate_instrument_N' with the following registers set:\n";
+			code += "; a0 = Address of the sample of this instrument (2 bytes per sample, see AK_SamLengths)\n";
+			code += "; a1 = %LARGEBUFFSIZE% Bytes Temporary Work Buffer Address (need not be cleared)\n";
+			code += "; a6 = Player data: pd_VirtInstTable (addresses of the 31 samples), pd_ExtSampleTable\n";
+			code += ";      (addresses of the " + externalSlots.ToString() + " external samples) and the variables at the end of this file\n";
+			code += "; d0-d7/a0/a1/a3/a4 are changed, a2/a5/a6 are not used. A routine reads the samples\n";
+			code += "; it depends on (see AK_SampleGenerators): they have to be rendered before it.\n";
+			code += "; Call 'ak_delta_decode_extsamples' once with a0 = External Samples Address.\n";
+			code += ";\n";
+			if (externalSampleTotalLength > 0)
+			{
+				// (the player sets pd_ExtSampleTable: the delta samples come first, the ADPCM samples after them)
+				code += "; External samples (offset in the block of AK_EXT_SMP_LEN bytes):\n";
+				int deltaOffset = 0, adpcmOffset = externalDeltaLength;
+				for (int i = 0; i < externalSampleLengthInt.Count; i++)
+				{
+					int length = externalSampleLengthInt[i];
+					if (length == 0) continue;
+					bool adpcm = externalSampleAdpcm[i];
+					int bytes = adpcm ? (length + 1) / 2 : length;
+					code += "; " + (i + 1).ToString() + ": offset " + (adpcm ? adpcmOffset : deltaOffset).ToString() + ", " + bytes.ToString() + " bytes" +
+							(adpcm ? " (4 bit ADPCM, " + length.ToString() + " samples)" : "") + "\n";
+					if (adpcm) adpcmOffset += bytes; else deltaOffset += bytes;
+				}
+				code += ";\n";
+			}
+			code += DividerCode();
+			code += "\n";
+			code += "AK_TMP_MEMORY_SIZE		equ %LARGEBUFFSIZE%\n";
+			code += "\n";
+			code += "AK_EXT_SMP_LEN			equ " + externalSampleTotalLength.ToString() + "\n";
+			code += "AK_VERSION				equ 119\n";
+			code += "AK_16BIT				equ 1		; 16 bit samples (signed words)\n";
+			code += "\n";
+			code += "ak_delta_decode_extsamples:\n";
+			if (externalDeltaLength > 0)
+			{
+				code += "				; Convert external samples from stored deltas\n";
+				if (!externalAdpcm)
+					code += "				move.w	#AK_EXT_SMP_LEN-1,d7\n";
+				else
+					code += "				move.w	#" + externalDeltaLength.ToString() + "-1,d7\n";
+				code += "				moveq	#0,d0\n";
+				code += ".DeltaLoop		add.b	(a0),d0\n";
+				code += "				move.b	d0,(a0)+\n";
+				code += "				dbra	d7,.DeltaLoop\n";
+			}
+			code += "				rts\n";
+			code += "\n";
+
+			return code;
+		}
+
+		static int UnzLength(List<int> lengths, string offset)
+		{
+			int index = int.Parse(offset) / 4;
+			return index < lengths.Count ? lengths[index] : 0;
+		}
+
+		// the generated code in the form of the player: see above. Comment lines stay as they are.
+		static string UnzMap(string code)
+		{
+			const string notInName = @"(?<![\w$.])";
+			var lines = new List<string>();
+			int progress = 0;
+			foreach (string source in code.Split('\n'))
+			{
+				string line = source;
+				string text = line.Trim();
+				// no progress
+				if (progress > 0)
+				{
+					if (text.StartsWith("ifne") || text.StartsWith("ifeq")) progress++;
+					else if (text == "endif") progress--;
+					continue;
+				}
+				if (text.StartsWith("ifne") && text.EndsWith("AK_USE_PROGRESS"))
+				{
+					progress = 1;
+					continue;
+				}
+				if (!text.StartsWith(";"))
+				{
+					if (Regex.IsMatch(line, notInName + @"a[23](?!\w)"))
+						throw new InvalidOperationException("-unz: a2/a3 is used by the generated code: " + text);
+					// a3 is the scratch register, a6 points to the variables
+					line = Regex.Replace(line, notInName + @"a6(?!\w)", "a3");
+					line = Regex.Replace(line, notInName + @"a5(?!\w)", "a6");
+					// the end of a source sample (reverse clone): the samples of the player are not
+					// one behind the other, so it is the start plus two bytes per sample
+					line = Regex.Replace(line, @"^(\s*)move\.l\tAK_SmpAddr\+(\d+)\+4\(a6\),(a\d)$", m =>
+						m.Groups[1].Value + "move.l\tAK_SmpAddr+" + m.Groups[2].Value + "(a6)," + m.Groups[3].Value + "\n" +
+						m.Groups[1].Value + "add.l\t#" + (UnzLength(instrumentLengthInt, m.Groups[2].Value) * 2).ToString() + "," + m.Groups[3].Value);
+					// addresses from the tables of the player, lengths (in samples) as numbers
+					line = Regex.Replace(line, @"AK_SmpAddr\+(\d+)\(a6\)", m => "pd_VirtInstTable+" + (int.Parse(m.Groups[1].Value) / 4).ToString() + "*4(a6)");
+					line = Regex.Replace(line, @"AK_ExtSmpAddr\+(\d+)\(a6\)", m => "pd_ExtSampleTable+" + (int.Parse(m.Groups[1].Value) / 4).ToString() + "*4(a6)");
+					line = Regex.Replace(line, @"AK_SmpLen\+(\d+)\(a6\)", m => "#" + UnzLength(instrumentLengthInt, m.Groups[1].Value).ToString());
+					line = Regex.Replace(line, @"AK_ExtSmpLen\+(\d+)\(a6\)", m => "#" + UnzLength(externalSampleLengthInt, m.Groups[1].Value).ToString());
+					if (line.Contains("AK_SmpAddr") || line.Contains("AK_SmpLen") || line.Contains("AK_ExtSmp"))
+						throw new InvalidOperationException("-unz: not mapped: " + text);
+				}
+				lines.Add(line);
+			}
+			return string.Join("\n", lines);
+		}
+
+		// the variables are part of the structure of the player, the lengths are in bytes
+		static string UnzVarsCode()
+		{
+			string code = string.Empty;
+
+			code += "				rsreset\n";
+			code += "AK_LPF			rs.w	1\n";
+			code += "AK_HPF			rs.w	1\n";
+			code += "AK_BPF			rs.w	1\n";
+			code += "				rsreset\n";
+			code += "AK_CHORD1		rs.l	1\n";
+			code += "AK_CHORD2		rs.l	1\n";
+			code += "AK_CHORD3		rs.l	1\n";
+			code += "\n";
+			code += "; The player data (a6) holds pd_VirtInstTable (rs.l 31), pd_ExtSampleTable (rs.l " + externalSlots.ToString() + ") and\n";
+			code += "; these variables." + (usedNoise ? " AK_NoiseSeeds start with $67452301, $efcdab89, $00000000." : "") + "\n";
+			code += "				IF	0	; move to pd structure!\n";
+			if (usedNoise)
+				code += "AK_NoiseSeeds	rs.l	3\n";
+			code += "AK_OpInstance	rs.w    %MAXWORDINSTANCES%\n";
+			code += "AK_EnvDValue	rs.l	%MAXENVDINSTANCES%\n";
+			code += "				ENDC\n";
+			code += "\n";
+			code += "AK_SamLengths:\n";
+			for (int i = 0; i < 31; i++)
+			{
+				int length = i < instrumentLengthInt.Count ? instrumentLengthInt[i] : 0;
+				code += "				dc.l	$" + length.ToString("x8") + "*2		; Instrument " + (i + 1).ToString() + " Length \n";
+			}
+			for (int i = 0; i < externalSlots; i++)
+			{
+				int length = i < externalSampleLengthInt.Count ? externalSampleLengthInt[i] : 0;
+				code += "				dc.l	$" + length.ToString("x8") + "*2		; External Sample " + (i + 1).ToString() + " Length \n";
+			}
+
+			return code;
+		}
+
+		// a template of the render list of the player: the routines and the samples they read
+		static string UnzGeneratorsCode()
+		{
+			string code = string.Empty;
+
+			code += "				IF	0	; copy to where you want to have it!\n";
+			code += "AK_SampleGenerators:\n";
+			foreach (int number in unzInstruments)
+			{
+				code += "				dc.w	" + number.ToString() + ",ak_generate_instrument_" + number.ToString() + "-AK_SampleGenerators";
+				if (unzDepends[number].Count > 0)
+					code += "	; Depending on " + string.Join(", ", unzDepends[number]);
+				code += "\n";
+			}
+			for (int i = 0; i < unzInstruments.Count; i += 8)
+				code += "				dc.w	" + string.Join(",", unzInstruments.Skip(i).Take(8).Select(n => (-n).ToString())) + "\n";
+			code += "				dc.w	0\n";
+			code += "				ENDC\n";
+
+			return code;
+		}
+
 		static string DividerCode()
 		{
 			return ";----------------------------------------------------------------------------\n";

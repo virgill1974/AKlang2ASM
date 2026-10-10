@@ -9,6 +9,7 @@ AKlang2Asm converts an AmigaKlang patch script into a fully expanded Motorola 68
 - Parses AmigaKlang script files and emits ready-to-assemble 68k source code.
 - Supports progress reporting (`-p` byte-level per instrument, `-pf` fine progress per sample byte).
 - Renders 8 bit samples or, with `-16`, 16 bit samples (V1.18).
+- `-unz` (V1.19): 16 bit samples with one routine per instrument, for the UNZ player of Platon42.
 - Automatically calculates sample lengths, loop offsets, large buffer requirements, and maximum operator instance counts.
 - Converts embedded external samples from delta encoding back to absolute form.
 - Generates helper data (`AK_Vars`, decay tables, buffer declarations) so the output can be dropped into a demo/mod production without extra glue code.
@@ -31,7 +32,7 @@ The compiled executable will land in `bin/<config>/<target>/Aklang2Asm.exe`.
 ## Usage
 
 ```bash
-Aklang2Asm <script.txt> <output.asm> [-p|-pf] [-e] [-16]
+Aklang2Asm <script.txt> <output.asm> [-p|-pf] [-e] [-16|-unz]
 ```
 
 - `script.txt` — AmigaKlang export script (see format below).
@@ -43,6 +44,8 @@ Aklang2Asm <script.txt> <output.asm> [-p|-pf] [-e] [-16]
   are still being rendered. Samples that clone/chord/mix an earlier one then see two zero bytes
   at its start.
 - `-16` — (optional, V1.18) 16 bit samples, see below. Not together with `-e`.
+- `-unz` — (optional, V1.19) 16 bit samples, one routine per instrument, see below. Not together
+  with `-p`, `-pf` or `-e`.
 
 If no option is supplied, progress writes are disabled. The header also defines `AK_TMP_LEN`,
 the size of the temporary work buffer passed in `a1`. V1.16 does not wait for a key press when
@@ -70,6 +73,27 @@ endian) instead of bytes. Without the switch the code is the same as in V1.17.
 The header defines `AK_16BIT equ 1` (`0` without the switch), so a player can check what it
 got. The AmigaKlang editor renders the same samples for "Export Samples to XM" and writes this
 source with "Export ASM Source (16 bit)".
+
+## One routine per instrument (`-unz`, V1.19)
+
+`-unz` writes the 16 bit code in the form the UNZ player of Platon42 uses (until now made from
+the 8 bit output of V1.1 by his `ExemusicConv.kt`). [UNZ_PLAYER.md](UNZ_PLAYER.md) has the
+details and the differences to the converted files. In short:
+
+- There is no `AK_Generate`. Every instrument with operators has a routine
+  `ak_generate_instrument_N` (`a0` = its sample, `a1` = work buffer of `AK_TMP_MEMORY_SIZE` bytes,
+  `a6` = data of the player), which changes `d0-d7/a0/a1/a3/a4`. There is no progress.
+- The player keeps the variables (`AK_NoiseSeeds`, `AK_OpInstance`, `AK_EnvDValue`: the lines in
+  the `IF 0` block) and the tables `pd_VirtInstTable` (addresses of the 31 samples) and
+  `pd_ExtSampleTable` (addresses of the external samples) in its structure.
+- `AK_SamLengths` has the lengths in bytes (`dc.l $…*2`), `ak_delta_decode_extsamples` decodes
+  the external samples (`a0`), `AK_SampleGenerators` (in `IF 0`) lists the routines and the
+  samples they depend on.
+- The samples need not lie one behind the other and the routines can be called in any order
+  that renders the sources first: each routine clears its own delay buffers, a reversed clone
+  finds the end of its source by its length, and a chord generator voice is silent behind the
+  end of its source (`AK_Generate` reads the memory behind it there).
+- The operator code is the code of `-16`. Without `-unz` the output is the same as in V1.18.
 
 ## Script format
 
@@ -129,7 +153,7 @@ The formula is compiled into `.w` code on `d4` (`d5`/`d6` and the stack as scrat
 `Bytebeat.cs` holds parser and semantics; the AmigaKlang editor uses the same file, so the
 editor preview and the Amiga render the same samples.
 
-V1.17 also defines `AK_VERSION equ 117` (V1.18: `118`) in the header (players can check for a
+V1.17 also defines `AK_VERSION equ 117` (V1.18: `118`, V1.19: `119`) in the header (players can check for a
 minimum version) and prints a warning for script lines with an unknown operator instead of silently
 skipping them.
 
@@ -143,7 +167,7 @@ shorter than 257 samples), which also saves 6 bytes per loop.
 
 The generated `output.asm` contains:
 
-- Header banner describing the tool version (currently 1.18) and usage of `AK_Generate`.
+- Header banner describing the tool version (currently 1.19) and usage of `AK_Generate`.
 - Constant section with `AK_USE_PROGRESS`, `AK_FINE_PROGRESS`, buffer sizes (`AK_SMP_LEN`, `AK_EXT_SMP_LEN`, etc.).
 - The `AK_Generate` routine, which:
   - Computes sample and external sample base addresses.
