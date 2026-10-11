@@ -65,7 +65,8 @@ endian) instead of bytes. Without the switch the code is the same as in V1.17.
   `chordgen` sums the halved words of its voices in 32 bit and clamps, `samplemixer` sums
   `sample * volume` of its voices and divides the sum by 64 once, the loop generator does its
   crossfade on words.
-- `imported_sample` (also ADPCM) is unchanged: imported samples are 8 bit, `<< 8`.
+- `imported_sample` is unchanged for delta coded samples: they are 8 bit, `<< 8`. An ADPCM
+  sample is the 16 bit value of the decoder (V1.20; the 8 bit code takes its high byte).
 - Nothing is cleared at the start of a sample (the 8 bit code clears its first two bytes for
   ProTracker).
 - `-e` (early play of the Amiga player, which plays 8 bit) is rejected together with `-16`.
@@ -153,7 +154,7 @@ The formula is compiled into `.w` code on `d4` (`d5`/`d6` and the stack as scrat
 `Bytebeat.cs` holds parser and semantics; the AmigaKlang editor uses the same file, so the
 editor preview and the Amiga render the same samples.
 
-V1.17 also defines `AK_VERSION equ 117` (V1.18: `118`, V1.19: `119`) in the header (players can check for a
+V1.17 also defines `AK_VERSION equ 117` (V1.18: `118`, V1.19: `119`, V1.20: `120`) in the header (players can check for a
 minimum version) and prints a warning for script lines with an unknown operator instead of silently
 skipping them.
 
@@ -167,7 +168,7 @@ shorter than 257 samples), which also saves 6 bytes per loop.
 
 The generated `output.asm` contains:
 
-- Header banner describing the tool version (currently 1.19) and usage of `AK_Generate`.
+- Header banner describing the tool version (currently 1.20) and usage of `AK_Generate`.
 - Constant section with `AK_USE_PROGRESS`, `AK_FINE_PROGRESS`, buffer sizes (`AK_SMP_LEN`, `AK_EXT_SMP_LEN`, etc.).
 - The `AK_Generate` routine, which:
   - Computes sample and external sample base addresses.
