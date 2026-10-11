@@ -192,7 +192,7 @@ namespace Aklang2Asm
 
 			asmCode += DividerCode();
 			asmCode += ";\n";
-			asmCode += "; Generated with Aklang2Asm V1.19, by Dan/Lemon. 2021-2024.\n";
+			asmCode += "; Generated with Aklang2Asm V1.20, by Dan/Lemon. 2021-2024.\n";
 			asmCode += ";\n";
 			asmCode += "; Based on Alcatraz Amigaklang rendering core. (c) Jochen 'Virgill' Feldkötter 2020.\n";
 			asmCode += ";\n";
@@ -240,6 +240,10 @@ namespace Aklang2Asm
 			asmCode += "; - Option -unz: 16 bit samples for the UNZ player of Platon42: one routine per instrument\n";
 			asmCode += ";   (ak_generate_instrument_N), variables and sample addresses in the structure of the player\n";
 			asmCode += ";\n";
+			asmCode += "; What's new in V1.20?\n";
+			asmCode += "; - 16 bit samples (-16, -unz): an ADPCM imported sample is the 16 bit value of the decoder\n";
+			asmCode += ";   (the 8 bit code takes its high byte as before)\n";
+			asmCode += ";\n";
 			if (unz)
 			{
 				asmCode += UnzHeaderCode();
@@ -264,7 +268,7 @@ namespace Aklang2Asm
 			asmCode += "AK_SMP_LEN				equ %SAMPLESIZE%\n";
 			asmCode += "AK_EXT_SMP_LEN			equ " + externalSampleTotalLength.ToString() + "\n";
 			asmCode += "AK_TMP_LEN				equ %LARGEBUFFSIZE%\n";
-			asmCode += "AK_VERSION				equ 119\n";
+			asmCode += "AK_VERSION				equ 120\n";
 			asmCode += "AK_16BIT				equ " + ( wide ? "1" : "0" ) + "		; 1 = 16 bit samples (signed words)\n";
 			asmCode += "\n";
 			asmCode += "AK_Generate:\n";
@@ -2996,6 +3000,7 @@ namespace Aklang2Asm
 			//{
 			//	if (smp >= ImpLength[sample]) return 0;
 			//	return AK_AdpcmNext(ImpBaseAdr[sample], smp, state) & 0xff00;	// state: value, step (per instance)
+			//	(16 bit samples, V1.20: without the & 0xff00)
 			//}
 
 			int instanceVal = (currentWordInstance * 2);
@@ -3010,7 +3015,8 @@ namespace Aklang2Asm
 			code += "				lea		AK_OpInstance+@IN(a5),a6\n";
 			code += "				bsr		AK_AdpcmNext\n";
 			code += "				move.w	d6,@OR\n";
-			code += "				clr.b	@OR\n";
+			if (!wide)
+				code += "				clr.b	@OR\n";
 			code += ".NoAdpcmIS_" + localLabel + "\n";
 
 			code = code.Replace("@OR", outReg);
@@ -3566,7 +3572,7 @@ namespace Aklang2Asm
 			code += "AK_TMP_MEMORY_SIZE		equ %LARGEBUFFSIZE%\n";
 			code += "\n";
 			code += "AK_EXT_SMP_LEN			equ " + externalSampleTotalLength.ToString() + "\n";
-			code += "AK_VERSION				equ 119\n";
+			code += "AK_VERSION				equ 120\n";
 			code += "AK_16BIT				equ 1		; 16 bit samples (signed words)\n";
 			code += "\n";
 			code += "ak_delta_decode_extsamples:\n";

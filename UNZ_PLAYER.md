@@ -1,6 +1,6 @@
 # Aklang2Asm `-unz`: 16 bit samples for the UNZ player
 
-*For Platon42. Aklang2Asm V1.19, AmigaKlang ImGui editor V1.5.*
+*For Platon42. Aklang2Asm V1.20, AmigaKlang ImGui editor V1.5.*
 
 `-unz` makes Aklang2Asm write the source that `ExemusicConv.kt` made out of the 8 bit output of
 V1.1: 16 bit samples, one routine per instrument, the variables and sample addresses in the
@@ -27,7 +27,7 @@ It is the interface of the converted file, label for label:
 | changed | `d0-d7/a0/a1/a3/a4`. `a2`, `a5` and `a6` are not touched. |
 | `ak_delta_decode_extsamples` | `a0` = external samples. Call it once before the first routine. Always present (just `rts` without external samples). |
 | `AK_SamLengths` | 31 instrument lengths, then the lengths of the external samples, as `dc.l $…*2` (bytes of a 16 bit sample). An instrument without operators has `0`. |
-| `AK_TMP_MEMORY_SIZE`, `AK_EXT_SMP_LEN` | as before. New: `AK_VERSION equ 119`, `AK_16BIT equ 1`. |
+| `AK_TMP_MEMORY_SIZE`, `AK_EXT_SMP_LEN` | as before. New: `AK_VERSION equ 120`, `AK_16BIT equ 1`. |
 | `AK_SampleGenerators` | the template in `IF 0 … ENDC`: number and routine of every instrument, with `; Depending on …`, then the negated numbers and `0`. |
 
 ### Player data (`a6`)
@@ -130,6 +130,9 @@ distortion and all ten loop generators.
   ; 2: offset 0, 6936 bytes
   ; 3: offset 6936, 3866 bytes
   ```
+  V1.20: an ADPCM sample is rendered with the full 16 bit value of the decoder (the low byte is
+  no longer cleared); the editor does the same for "Export Samples to XM". Delta coded imports
+  stay 8 bit.
   The delta coded samples come first (in slot order), the ADPCM samples after them, each with
   half the bytes. `ak_delta_decode_extsamples` only decodes the delta part; ADPCM samples are
   decoded while `imported_sample` plays them. `pd_ExtSampleTable` has to point to these offsets.
@@ -148,7 +151,8 @@ distortion and all ten loop generators.
 
 ## Questions
 
-1. Does the player read `AK_SamLengths`, or only the generated code? (It is kept either way.)
+1. ~~Does the player read `AK_SamLengths`, or only the generated code?~~ Answered: the player
+   reads it, so the table stays as it is (the generated code itself uses numbers).
 2. `AK_SampleGenerators`: your converted file has no line of negated numbers, the script writes
    one. Which form do you want?
 3. Do you render in another order than 1 … 31? Then say if noise should be the same as in the
