@@ -54,7 +54,7 @@ its input is redirected (`aklang2asm ... <NUL` in batch files).
 ## 16 bit samples (`-16`, V1.18)
 
 With `-16` the generated `AK_Generate` renders every instrument as signed 16 bit words (big
-endian) instead of bytes. Without the switch the code is the same as in V1.17.
+endian) instead of bytes. Without the switch the samples are 8 bit as before.
 
 - `v1` is written as a word (`move.w d0,(a0)+`); the 8 bit code writes its high byte.
 - A sample of `length` samples takes `2 * length` bytes; `AK_SMP_LEN` (the size of the sample
@@ -93,8 +93,18 @@ details and the differences to the converted files. In short:
 - The samples need not lie one behind the other and the routines can be called in any order
   that renders the sources first: each routine clears its own delay buffers, a reversed clone
   finds the end of its source by its length, and a chord generator voice is silent behind the
-  end of its source (`AK_Generate` reads the memory behind it there).
-- The operator code is the code of `-16`. Without `-unz` the output is the same as in V1.18.
+  end of its source (since V1.21 in every mode, see below).
+- The operator code is the code of `-16`.
+
+## Chord generator at the end of its source (V1.21)
+
+A voice of `chordgen` runs faster than the source it reads (up to twice as fast for an octave),
+so it reaches the end of the source before the chord sample ends. Until V1.20 the 8 bit code and
+`-16` went on reading the memory behind the source, which is the next instrument (`-unz` was
+limited from the start). Now such a voice is silent in every mode: the limit is the length of
+the source minus the shift, checked per voice (`cmp.l a6,dN / bge`), about 20 bytes more per
+`chordgen`. The AmigaKlang editor renders the same (its preview had zeros there after loading a
+patch). Scripts without `chordgen` give the same code as V1.20.
 
 ## Script format
 
@@ -154,7 +164,7 @@ The formula is compiled into `.w` code on `d4` (`d5`/`d6` and the stack as scrat
 `Bytebeat.cs` holds parser and semantics; the AmigaKlang editor uses the same file, so the
 editor preview and the Amiga render the same samples.
 
-V1.17 also defines `AK_VERSION equ 117` (V1.18: `118`, V1.19: `119`, V1.20: `120`) in the header (players can check for a
+V1.17 also defines `AK_VERSION equ 117` (V1.18: `118` … V1.21: `121`) in the header (players can check for a
 minimum version) and prints a warning for script lines with an unknown operator instead of silently
 skipping them.
 
@@ -168,7 +178,7 @@ shorter than 257 samples), which also saves 6 bytes per loop.
 
 The generated `output.asm` contains:
 
-- Header banner describing the tool version (currently 1.20) and usage of `AK_Generate`.
+- Header banner describing the tool version (currently 1.21) and usage of `AK_Generate`.
 - Constant section with `AK_USE_PROGRESS`, `AK_FINE_PROGRESS`, buffer sizes (`AK_SMP_LEN`, `AK_EXT_SMP_LEN`, etc.).
 - The `AK_Generate` routine, which:
   - Computes sample and external sample base addresses.
