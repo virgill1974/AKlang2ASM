@@ -1,6 +1,6 @@
 # Aklang2Asm `-unz`: 16 bit samples for the UNZ player
 
-*For Platon42. Aklang2Asm V1.20, AmigaKlang ImGui editor V1.5.*
+*For Platon42. Aklang2Asm V1.21, AmigaKlang ImGui editor V1.5.*
 
 `-unz` makes Aklang2Asm write the source that `ExemusicConv.kt` made out of the 8 bit output of
 V1.1: 16 bit samples, one routine per instrument, the variables and sample addresses in the
@@ -27,7 +27,7 @@ It is the interface of the converted file, label for label:
 | changed | `d0-d7/a0/a1/a3/a4`. `a2`, `a5` and `a6` are not touched. |
 | `ak_delta_decode_extsamples` | `a0` = external samples. Call it once before the first routine. Always present (just `rts` without external samples). |
 | `AK_SamLengths` | 31 instrument lengths, then the lengths of the external samples, as `dc.l $…*2` (bytes of a 16 bit sample). An instrument without operators has `0`. |
-| `AK_TMP_MEMORY_SIZE`, `AK_EXT_SMP_LEN` | as before. New: `AK_VERSION equ 120`, `AK_16BIT equ 1`. |
+| `AK_TMP_MEMORY_SIZE`, `AK_EXT_SMP_LEN` | as before. New: `AK_VERSION equ 121`, `AK_16BIT equ 1`. |
 | `AK_SampleGenerators` | the template in `IF 0 … ENDC`: number and routine of every instrument, with `; Depending on …`, then the negated numbers and `0`. |
 
 ### Player data (`a6`)
