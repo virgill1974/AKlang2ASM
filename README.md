@@ -1,6 +1,6 @@
 # AKlang2Asm
 
-*Author: Dan / Lemon*
+*Author: Dan / Lemon. ARM output (`-arm`): kieran / Bitshifters.*
 
 AKlang2Asm converts an AmigaKlang patch script into a fully expanded Motorola 68000 assembly routine.  The generated routine (labelled `AK_Generate`) renders every instrument of a patch into raw sample memory and mirrors the rendering logic of the original AmigaKlang tool, including loop generation, delays, comb filters, reverb, distortion, ADSR, clone/import operators, etc.
 
@@ -10,6 +10,7 @@ AKlang2Asm converts an AmigaKlang patch script into a fully expanded Motorola 68
 - Supports progress reporting (`-p` byte-level per instrument, `-pf` fine progress per sample byte).
 - Renders 8 bit samples or, with `-16`, 16 bit samples (V1.18).
 - `-unz` (V1.19): 16 bit samples with one routine per instrument, for the UNZ player of Platon42.
+- `-arm` (V1.22): ARM code for the Acorn Archimedes, a port of `akp2arc.py` by kieran / Bitshifters.
 - Automatically calculates sample lengths, loop offsets, large buffer requirements, and maximum operator instance counts.
 - Converts embedded external samples from delta encoding back to absolute form.
 - Generates helper data (`AK_Vars`, decay tables, buffer declarations) so the output can be dropped into a demo/mod production without extra glue code.
@@ -32,7 +33,7 @@ The compiled executable will land in `bin/<config>/<target>/Aklang2Asm.exe`.
 ## Usage
 
 ```bash
-Aklang2Asm <script.txt> <output.asm> [-p|-pf] [-e] [-16|-unz]
+Aklang2Asm <script.txt> <output.asm> [-p|-pf] [-e] [-16|-unz|-arm]
 ```
 
 - `script.txt` — AmigaKlang export script (see format below).
@@ -46,6 +47,8 @@ Aklang2Asm <script.txt> <output.asm> [-p|-pf] [-e] [-16|-unz]
 - `-16` — (optional, V1.18) 16 bit samples, see below. Not together with `-e`.
 - `-unz` — (optional, V1.19) 16 bit samples, one routine per instrument, see below. Not together
   with `-p`, `-pf` or `-e`.
+- `-arm` — (optional, V1.22) ARM code for the Acorn Archimedes instead of 68000 code, see below.
+  Not together with any of the other options.
 
 If no option is supplied, progress writes are disabled. The header also defines `AK_TMP_LEN`,
 the size of the temporary work buffer passed in `a1`. V1.16 does not wait for a key press when
@@ -106,6 +109,57 @@ the source minus the shift, checked per voice (`cmp.l a6,dN / bge`), about 20 by
 `chordgen`. The AmigaKlang editor renders the same (its preview had zeros there after loading a
 patch). Scripts without `chordgen` give the same code as V1.20.
 
+## ARM code for the Acorn Archimedes (`-arm`, V1.22)
+
+`Aklang2Asm script.txt arcmusic.asm -arm` writes `AK_Generate` as ARM code in the standard
+syntax of vasm (`vasmarm_std -m250 -Fbin -opt-adr`). `ArmGenerator.cs` is a port of
+**`akp2arc.py` ("Aklang2Acorn") v1.0 by kieran / Bitshifters**
+(<https://github.com/kieranhj/archieklang>), with his permission: the register use, the
+interface and the code of the nodes are his. That repository also has the player around it
+(`archieklang.asm`, QTM) and the build with Shrinkler.
+
+Interface, as in `akp2arc.py`:
+
+| | |
+|---|---|
+| `AK_Generate` | `R8` = sample buffer (`AK_SMP_LEN` bytes), `R9` = temporary work buffer (`AK_TempBufferSize` bytes = `AK_MaxTempBuffers` × 8192), `R10` = external samples (`AK_EXT_SMP_LEN` bytes). Returns with `ldr pc, [sp], #4`; all registers are used. |
+| `AK_PROGRESS`, `AK_FINE_PROGRESS` | macros you define (may be empty): called per instrument and per sample |
+| `AK_CLEAR_FIRST_2_BYTES` | symbol you define: 1 clears the first two bytes of each sample like the Amiga code |
+| `AK_VERSION` | 122 |
+
+The samples are 8 bit signed, like the 68000 code without `-16`; the conversion to the
+logarithmic format of the Archimedes is left to the player, as in archieklang.
+
+Added to the port, so everything the AmigaKlang ImGui editor exports works:
+
+- the **loop generator** of the editor (crossfade of V1.14; `akp2arc.py` has the loop generator
+  of the original editor, which gives other samples),
+- **clone / clone_reverse with transpose**, **samplemixer**, **bytebeat** (division and modulo
+  call a small shared routine, the ARM2 has no divide),
+- up to **12 external samples** and **4 bit ADPCM** (`AK_ExtSmpOffset` has the place of each
+  sample in the block, `AK_EXT_DELTA_LEN` the size of the delta coded part),
+- constants that need more than two rotated bytes are built from their bytes (vasm only splits
+  an immediate into two),
+- the shift of `chordgen` from a variable is taken `& 255` like in the editor.
+
+Not ported: the option `-b` of `akp2arc.py` (the bugs of the old editor).
+
+Tested on an emulated ARM (Unicorn) against the 8 bit render of the editor:
+
+- The first commit of `ArmGenerator.cs` gives the text of `akp2arc.py` for the 18 scripts of
+  archieklang, character for character.
+- 17 example patches (373 instruments): 358 are bit-identical to the editor. The other 15 are
+  the two known quirks of the editor, which the 68000 code does not have either: a reversed
+  clone starts one sample late in the editor (9 instruments), and the editor does not reset the
+  positions of delay and comb filter between instruments (6). With these two removed from the
+  editor, all 465 instruments of 21 patches are bit-identical.
+- Every operator of the bytebeat formulas over 65534 samples, the sample mixer, clone with
+  transpose, chords that pass the end of their source, long loops and ADPCM imports:
+  bit-identical to the editor and, where the sources are exact, to the 68000 code.
+
+(The 68000 code itself differs from the editor in most instruments by rounding; the ARM code
+follows the arithmetic of the editor.)
+
 ## Script format
 
 The script is a plain-text file that the Windows AmigaKlang tool can export. At a high level:
@@ -164,7 +218,7 @@ The formula is compiled into `.w` code on `d4` (`d5`/`d6` and the stack as scrat
 `Bytebeat.cs` holds parser and semantics; the AmigaKlang editor uses the same file, so the
 editor preview and the Amiga render the same samples.
 
-V1.17 also defines `AK_VERSION equ 117` (V1.18: `118` … V1.21: `121`) in the header (players can check for a
+V1.17 also defines `AK_VERSION equ 117` (V1.18: `118` … V1.22: `122`) in the header (players can check for a
 minimum version) and prints a warning for script lines with an unknown operator instead of silently
 skipping them.
 
@@ -178,7 +232,7 @@ shorter than 257 samples), which also saves 6 bytes per loop.
 
 The generated `output.asm` contains:
 
-- Header banner describing the tool version (currently 1.21) and usage of `AK_Generate`.
+- Header banner describing the tool version (currently 1.22) and usage of `AK_Generate`.
 - Constant section with `AK_USE_PROGRESS`, `AK_FINE_PROGRESS`, buffer sizes (`AK_SMP_LEN`, `AK_EXT_SMP_LEN`, etc.).
 - The `AK_Generate` routine, which:
   - Computes sample and external sample base addresses.

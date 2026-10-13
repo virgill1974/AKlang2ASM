@@ -15,6 +15,10 @@ namespace Aklang2Asm
 	//   r9 = temporary work buffer, r10 = AK_Vars (external samples on entry), r11 = 32767.
 	// Values are kept as 32 bit numbers with the 16 bit rules of the editor (sign extension and
 	// clamping where the editor has them), the delay buffers hold 2048 longs each.
+	//
+	// Added to the port (the first commit of this file gives the output of akp2arc.py): the loop
+	// generator of the editor (crossfade of V1.14), clone with transpose, sample mixer, bytebeat,
+	// up to 12 external samples and 4 bit ADPCM.
 	class ArmGenerator
 	{
 		static readonly int[] DecayTable = { 32767, 32767, 32767, 16384, 10922, 8192, 6553, 4681, 3640, 2978, 2520, 2048, 1724, 1489, 1310, 1129, 992, 885, 799, 712, 642, 585, 537, 489, 448, 414, 385, 356, 330, 309, 289, 270, 254, 239, 225, 212, 201, 190, 181, 171, 163, 155, 148, 141, 134, 129, 123, 118, 113, 108, 104, 100, 96, 93, 89, 86, 83, 80, 77, 75, 72, 70, 68, 65, 63, 61, 60, 58, 56, 54, 53, 51, 50, 49, 47, 46, 45, 44, 43, 41, 40, 39, 38, 38, 37, 36, 35, 34, 33, 33, 32, 31, 30, 30, 29, 29, 28, 27, 27, 26, 26, 25, 25, 24, 24, 23, 23, 22, 22, 22, 21, 21, 20, 20, 20, 19, 19, 19, 18, 18, 18, 17, 17, 17, 17, 16, 16, 16 };
@@ -30,8 +34,12 @@ namespace Aklang2Asm
 		readonly StringBuilder o = new StringBuilder();
 		readonly string source;
 		readonly List<Instrument> instruments = new List<Instrument>();
-		int[] extSampleLens;
+		int[] extSampleLens;             // samples per slot
+		bool[] extAdpcm;                 // 4 bit ADPCM: stored after the delta samples, half the bytes
+		int extDeltaLen;                 // bytes of the delta coded samples
 		int totalSmpLen, totalExtSmpLen;
+		bool usedAdpcm, usedDivide;
+		int labelNr;
 
 		int instNr, instance, dvalue, buffers, maxInstances, maxDvalues, maxBuffers;
 		readonly List<int[]> adsrValues = new List<int[]>();
@@ -101,10 +109,21 @@ namespace Aklang2Asm
 			string header = parts[0].Replace("\r", "").Replace("\n", "");
 			parts.RemoveAt(0);
 
-			var lens = Parse("{:d}, {:d}, {:d}, {:d}, {:d}, {:d}, {:d}, {:d}", header);
-			if (lens == null) throw Bad("8 external sample lengths expected", header);
-			extSampleLens = lens.Select(Int).ToArray();
-			totalExtSmpLen = extSampleLens.Sum();
+			// external sample lengths: 8 (akp2arc.py) to 12, "<length>a" = 4 bit ADPCM
+			string[] entries = header.Split(',').Select(x => x.Trim()).ToArray();
+			if (entries.Length < 8 || entries.Length > 12) throw Bad("8 to 12 external sample lengths expected", header);
+			extSampleLens = new int[entries.Length];
+			extAdpcm = new bool[entries.Length];
+			for (int i = 0; i < entries.Length; i++)
+			{
+				bool adpcm = entries[i].EndsWith("a");
+				string number = adpcm ? entries[i].Substring(0, entries[i].Length - 1) : entries[i];
+				if (C(number) == null) throw Bad("external sample length", entries[i]);
+				extSampleLens[i] = Int(number);
+				extAdpcm[i] = adpcm && extSampleLens[i] > 0;
+				if (extAdpcm[i]) totalExtSmpLen += (extSampleLens[i] + 1) / 2;
+				else { extDeltaLen += extSampleLens[i]; totalExtSmpLen += extSampleLens[i]; }
+			}
 
 			foreach (string part in parts)
 			{
@@ -148,6 +167,32 @@ namespace Aklang2Asm
 			W($"\tmovgt r{var - 1}, r11\t; #32767");
 			W($"\tcmn r{var - 1}, r11\t\t; #-32768");
 			W($"\tmvnlt r{var - 1}, r11\t; #-32768");
+		}
+
+		// fits the 8 bit rotated immediate of ARM
+		static bool Rotated(uint v)
+		{
+			for (int r = 0; r < 32; r += 2)
+				if (((v << r) | (v >> ((32 - r) & 31))) <= 255) return true;
+			return false;
+		}
+
+		// a constant in a register: mov or mvn if it fits, else built from its bytes (vasm splits
+		// an immediate into two parts at most)
+		void Const(int reg, int value, string comment)
+		{
+			string tail = "\t; " + comment;
+			uint v = (uint)value;
+			if (Rotated(v)) { W($"\tmov r{reg}, #0x{v:x}{tail}"); return; }
+			if (Rotated(~v)) { W($"\tmvn r{reg}, #0x{~v:x}{tail}"); return; }
+			bool first = true;
+			for (int shift = 0; shift < 32; shift += 8)
+			{
+				uint part = v & (0xffu << shift);
+				if (part == 0) continue;
+				W(first ? $"\tmov r{reg}, #0x{part:x}{tail}" : $"\torr r{reg}, r{reg}, #0x{part:x}");
+				first = false;
+			}
 		}
 
 		// log2 of a power of two (-1 for 0), like the loops of akp2arc.py
@@ -475,10 +520,11 @@ namespace Aklang2Asm
 
 		void FuncClone(int var, string args)
 		{
-			var p = Parse("{},{:d}, {:d}", args);
+			var p = Parse("{},{:d}, {:d}, {}", args) ?? Parse("{},{:d}, {:d}", args);
 			if (p == null) throw Bad("clone", args);
 			if (p[0] != "smp") Console.WriteLine("WARNING: Expected \"smp\"?");
 			int sample = Int(p[1]), offset = Int(p[2]);
+			if (p.Length > 3 && p[3].Trim() != "0") { CloneTranspose(var, sample, offset, p[3].Trim(), false); return; }
 
 			if (offset != 0) W($"\tadd r{var - 1}, r7, #{offset}");
 			else W($"\tmov r{var - 1}, r7");
@@ -492,12 +538,52 @@ namespace Aklang2Asm
 			W($"\tmov r{var - 1}, r{var - 1}, asr #16");
 		}
 
+		// clone with a transpose (constant or v1-v4): the read position is a 16.16 counter of the
+		// instance that advances by 65536 + (t < 0 ? t : 2 * t) while it is inside the source
+		// (-32768 = half speed, 0 = original, 32767 = double speed), like the editor and the 68000 code
+		void CloneTranspose(int var, int sample, int offset, string transpose, bool reverse)
+		{
+			int? transV = V(transpose), transC = C(transpose);
+			if (transV == null && transC == null) throw Bad("clone: transpose", transpose);
+			int r = var - 1;
+
+			if (transV != null)
+			{
+				// the step first: the result variable may be the transpose variable
+				W($"\tmov r5, r{transV - 1}, asl #16");
+				W("\tmovs r5, r5, asr #16");
+				W("\taddpl r5, r5, r5\t; 2 * t for t >= 0");
+				W("\tadd r5, r5, #65536\t; step");
+			}
+			else Const(5, 65536 + (transC.Value < 0 ? transC.Value : 2 * transC.Value), "step");
+
+			W($"\tldr r6, [r10, #AK_OPINSTANCE+4*{instance}]\t; position 16.16");
+			W($"\tmov r{r}, r6, lsr #16");
+			if (offset != 0) W($"\tadd r{r}, r{r}, #{offset}");
+			W($"\tldr r4, [r10, #AK_SMPLEN+4*{sample}]");
+			W($"\tldr r12, [r10, #AK_SMPADDR+4*{sample}]");
+			W($"\tcmp r{r}, r4");
+			W($"\tmovge r{r}, #0");
+			W("\taddlt r6, r6, r5");
+			W($"\tstrlt r6, [r10, #AK_OPINSTANCE+4*{instance}]");
+			if (reverse)
+			{
+				W($"\tsublt r{r}, r4, r{r}");
+				W($"\tsublt r{r}, r{r}, #1");
+			}
+			W($"\tldrltb r{r}, [r12, r{r}]");
+			W($"\tmov r{r}, r{r}, asl #24");
+			W($"\tmov r{r}, r{r}, asr #16");
+			instance += 1;
+		}
+
 		void FuncImportedSample(int var, string args)
 		{
 			var p = Parse("{},{:d}", args);
 			if (p == null) throw Bad("imported_sample", args);
 			if (p[0] != "smp") Console.WriteLine("WARNING: Expected \"smp\"?");
 			int sample = Int(p[1]);
+			if (sample < extAdpcm.Length && extAdpcm[sample]) { ImportedAdpcm(var, sample); return; }
 
 			W($"\tmov r{var - 1}, r7");
 			W($"\tldr r6, [r10, #AK_EXTSMPADDR+4*{sample}]");
@@ -509,12 +595,32 @@ namespace Aklang2Asm
 			W($"\tmov r{var - 1}, r{var - 1}, asr #16");
 		}
 
+		// a 4 bit ADPCM sample is decoded while it is played: state (value, step - 127) per instance,
+		// the sample is the high byte of the 16 bit value of the decoder
+		void ImportedAdpcm(int var, int sample)
+		{
+			usedAdpcm = true;
+			string end = $"AdpcmEnd_{instNr}_{labelNr++}";
+
+			W($"\tmov r{var - 1}, #0");
+			W($"\tldr r4, [r10, #AK_EXTSMPLEN+4*{sample}]");
+			W("\tcmp r7, r4");
+			W($"\tbge {end}");
+			W($"\tldr r6, [r10, #AK_EXTSMPADDR+4*{sample}]");
+			W($"\tadd r12, r10, #AK_OPINSTANCE+4*{instance}");
+			W("\tbl AK_AdpcmNext");
+			W($"\tbic r{var - 1}, r4, #0xff");
+			W($"{end}:");
+			instance += 2;
+		}
+
 		void FuncCloneReverse(int var, string args)
 		{
-			var p = Parse("{},{:d}, {:d}", args);
+			var p = Parse("{},{:d}, {:d}, {}", args) ?? Parse("{},{:d}, {:d}", args);
 			if (p == null) throw Bad("clone_reverse", args);
 			if (p[0] != "smp") Console.WriteLine("WARNING: Expected \"smp\"?");
 			int sample = Int(p[1]), offset = Int(p[2]);
+			if (p.Length > 3 && p[3].Trim() != "0") { CloneTranspose(var, sample, offset, p[3].Trim(), true); return; }
 
 			if (offset != 0) W($"\tadds r{var - 1}, r7, #{offset}");
 			else W($"\tmovs r{var - 1}, r7");
@@ -729,8 +835,10 @@ namespace Aklang2Asm
 
 			if (shiftV != null)
 			{
-				W($"\tadd r4, r4, r{shiftV - 1}");
-				W($"\tsub r12, r12, r{shiftV - 1}");
+				// the shift is a byte in the editor (akp2arc.py took the whole variable)
+				W($"\tand r14, r{shiftV - 1}, #0xff");
+				W("\tadd r4, r4, r14");
+				W("\tsub r12, r12, r14");
 			}
 			else if (shiftC != 0)
 			{
@@ -875,6 +983,230 @@ namespace Aklang2Asm
 			instance += 3;
 		}
 
+		// samplemixer(instance, rowlength, notes, (row, track, source, step, volume) * notes): every
+		// rowlength samples the next of the 16 rows starts; a note restarts the voice of its track
+		// (source -1 = silent) at position 0 with a step (16.16) and a volume 0..64. A voice plays
+		// its source once. Output: sum of sample * volume of the voices, times 4, clamped.
+		// Instance: row counter, row, 4 voices of address, length, position, step, volume.
+		void FuncSampleMixer(int var, string args)
+		{
+			int[] v;
+			try { v = args.Split(',').Select(Int).ToArray(); }
+			catch (FormatException) { throw Bad("samplemixer", args); }
+			if (v.Length < 3 || v.Length != 3 + v[2] * 5) throw Bad("samplemixer", args);
+			int rowLength = v[1], notes = v[2], first = instance;
+			string id = $"{instNr}_{labelNr++}";
+
+			var rows = new SortedDictionary<int, List<int[]>>();
+			var tracksUsed = new bool[4];
+			for (int n = 0; n < notes; n++)
+			{
+				int[] note = v.Skip(3 + n * 5).Take(5).ToArray();
+				if (note[1] < 0 || note[1] > 3) throw Bad("samplemixer: track", args);
+				if (!rows.ContainsKey(note[0])) rows[note[0]] = new List<int[]>();
+				rows[note[0]].Add(note);
+				tracksUsed[note[1]] = true;
+			}
+
+			// next row: start the voices of its notes
+			W($"\tldr r4, [r10, #AK_OPINSTANCE+4*{first}]\t; row counter");
+			W("\tcmp r4, #0");
+			W($"\tbne MixNoRow_{id}");
+			W($"\tldr r5, [r10, #AK_OPINSTANCE+4*{first + 1}]\t; row");
+			W("\tcmp r5, #16");
+			W($"\tbhs MixNoRow_{id}");
+			W("\tadd r6, r5, #1");
+			W($"\tstr r6, [r10, #AK_OPINSTANCE+4*{first + 1}]");
+			Const(4, rowLength, "row length");
+			foreach (var row in rows)
+			{
+				W($"\tcmp r5, #{row.Key}");
+				W($"\tbne MixRow{row.Key}_{id}");
+				foreach (int[] note in row.Value)
+				{
+					int voice = first + 2 + note[1] * 5;
+					if (note[2] < 0)
+					{
+						W("\tmov r6, #0");
+						W($"\tstr r6, [r10, #AK_OPINSTANCE+4*{voice + 1}]\t; track {note[1] + 1} falls silent");
+						continue;
+					}
+					W($"\tldr r6, [r10, #AK_SMPADDR+4*{note[2]}]");
+					W($"\tstr r6, [r10, #AK_OPINSTANCE+4*{voice}]\t; track {note[1] + 1}: address");
+					W($"\tldr r6, [r10, #AK_SMPLEN+4*{note[2]}]");
+					W($"\tstr r6, [r10, #AK_OPINSTANCE+4*{voice + 1}]\t; length");
+					W("\tmov r6, #0");
+					W($"\tstr r6, [r10, #AK_OPINSTANCE+4*{voice + 2}]\t; position");
+					Const(6, note[3], "step");
+					W($"\tstr r6, [r10, #AK_OPINSTANCE+4*{voice + 3}]");
+					W($"\tmov r6, #{note[4]}");
+					W($"\tstr r6, [r10, #AK_OPINSTANCE+4*{voice + 4}]\t; volume");
+				}
+				W($"MixRow{row.Key}_{id}:");
+			}
+			W($"MixNoRow_{id}:");
+			W("\tsub r4, r4, #1");
+			W($"\tstr r4, [r10, #AK_OPINSTANCE+4*{first}]");
+
+			// mix the voices
+			W("\tmov r5, #0\t; sum");
+			for (int t = 0; t < 4; t++)
+			{
+				if (!tracksUsed[t]) continue;
+				W($"\tadd r14, r10, #AK_OPINSTANCE+4*{first + 2 + t * 5}\t; track {t + 1}");
+				W("\tldmia r14, {r4, r6, r12}\t; address, length, position");
+				W("\tcmp r6, r12, lsr #16");
+				W("\tldrhib r6, [r4, r12, lsr #16]");
+				W("\tmovls r6, #0\t; behind the end of the source");
+				W("\tldrhi r4, [r14, #12]\t; step");
+				W("\taddhi r12, r12, r4");
+				W("\tstrhi r12, [r14, #8]");
+				W("\tmov r6, r6, asl #24");
+				W("\tmov r6, r6, asr #24");
+				W("\tldr r4, [r14, #16]\t; volume");
+				W("\tmla r5, r6, r4, r5");
+			}
+			W($"\tmov r{var - 1}, r5, asl #2");
+			Clamp(var);
+
+			instance += 22;
+		}
+
+		// v = bytebeat(gain, formula): the formula (Bytebeat.cs) is an unsigned 16 bit expression
+		// over t = r7. Its value is built in r4 (r5 and the stack hold the left operands), the low
+		// byte is the sample (centred), then the gain like osc_saw.
+		void FuncBytebeat(int var, string args)
+		{
+			int comma = args.IndexOf(',');
+			if (comma < 0) throw Bad("bytebeat", args);
+			string gain = args.Substring(0, comma).Trim();
+			string formula = args.Substring(comma + 1);
+			Bytebeat.Node node;
+			string error;
+			if (!Bytebeat.TryParse(formula, out node, out error)) throw Bad("bytebeat formula (" + error + ")", formula);
+			if (V(gain) == null && C(gain) == null) throw Bad("bytebeat: gain", gain);
+
+			BytebeatExpr(node);
+			W("\tmov r4, r4, asl #24");
+			W("\teor r4, r4, #0x80000000");
+			W("\tmov r4, r4, asr #16\t; the low byte, centred");
+			VolVar(var, 5, V(gain), C(gain));
+		}
+
+		void Mask16()
+		{
+			W("\tmov r4, r4, lsl #16");
+			W("\tmov r4, r4, lsr #16");
+		}
+
+		// the value of a node in r4 (0..65535)
+		void BytebeatExpr(Bytebeat.Node n)
+		{
+			switch (n.Op)
+			{
+				case Bytebeat.Op.Const:
+					if (n.Value <= 255) W($"\tmov r4, #{n.Value}");
+					else
+					{
+						W($"\tmov r4, #0x{n.Value & 0xff00:x}");
+						if ((n.Value & 255) != 0) W($"\torr r4, r4, #0x{n.Value & 255:x}");
+					}
+					return;
+				case Bytebeat.Op.T:
+					W("\tmov r4, r7, lsl #16");
+					W("\tmov r4, r4, lsr #16\t; t");
+					return;
+				case Bytebeat.Op.Neg:
+					BytebeatExpr(n.A);
+					W("\trsb r4, r4, #0");
+					Mask16();
+					return;
+				case Bytebeat.Op.Not:
+					BytebeatExpr(n.A);
+					W("\tmvn r4, r4");
+					Mask16();
+					return;
+				case Bytebeat.Op.LogNot:
+					BytebeatExpr(n.A);
+					W("\tcmp r4, #0");
+					W("\tmoveq r4, #1");
+					W("\tmovne r4, #0");
+					return;
+				case Bytebeat.Op.Cond:
+				{
+					string id = $"{instNr}_{labelNr++}";
+					BytebeatExpr(n.A);
+					W("\tcmp r4, #0");
+					W($"\tbeq BBElse_{id}");
+					BytebeatExpr(n.B);
+					W($"\tb BBEnd_{id}");
+					W($"BBElse_{id}:");
+					BytebeatExpr(n.C);
+					W($"BBEnd_{id}:");
+					return;
+				}
+			}
+
+			// binary: a in r5, b in r4
+			BytebeatExpr(n.A);
+			if (n.B.Op == Bytebeat.Op.Const || n.B.Op == Bytebeat.Op.T)
+			{
+				W("\tmov r5, r4");
+				BytebeatExpr(n.B);
+			}
+			else
+			{
+				W("\tstr r4, [sp, #-4]!");
+				BytebeatExpr(n.B);
+				W("\tldr r5, [sp], #4");
+			}
+
+			switch (n.Op)
+			{
+				case Bytebeat.Op.Mul: W("\tmul r4, r5, r4"); Mask16(); break;
+				case Bytebeat.Op.Div: usedDivide = true; W("\tbl AK_Divide"); break;
+				case Bytebeat.Op.Mod: usedDivide = true; W("\tbl AK_Divide"); W("\tmov r4, r5"); break;
+				case Bytebeat.Op.Add: W("\tadd r4, r5, r4"); Mask16(); break;
+				case Bytebeat.Op.Sub: W("\tsub r4, r5, r4"); Mask16(); break;
+				case Bytebeat.Op.Shl:
+				case Bytebeat.Op.Shr:
+					// counts are taken & 63 and give 0 from 16 on
+					W("\tand r4, r4, #63");
+					W("\tcmp r4, #16");
+					W(n.Op == Bytebeat.Op.Shl ? "\tmovlo r4, r5, lsl r4" : "\tmovlo r4, r5, lsr r4");
+					W("\tmovhs r4, #0");
+					if (n.Op == Bytebeat.Op.Shl) Mask16();
+					break;
+				case Bytebeat.Op.Lt: Compare("lo", "hs"); break;
+				case Bytebeat.Op.Le: Compare("ls", "hi"); break;
+				case Bytebeat.Op.Gt: Compare("hi", "ls"); break;
+				case Bytebeat.Op.Ge: Compare("hs", "lo"); break;
+				case Bytebeat.Op.Eq: Compare("eq", "ne"); break;
+				case Bytebeat.Op.Ne: Compare("ne", "eq"); break;
+				case Bytebeat.Op.And: W("\tand r4, r5, r4"); break;
+				case Bytebeat.Op.Xor: W("\teor r4, r5, r4"); break;
+				case Bytebeat.Op.Or: W("\torr r4, r5, r4"); break;
+				case Bytebeat.Op.LogAnd:
+					W("\tcmp r5, #0");
+					W("\tcmpne r4, #0");
+					W("\tmovne r4, #1");
+					W("\tmoveq r4, #0");
+					break;
+				default:    // LogOr
+					W("\torrs r4, r5, r4");
+					W("\tmovne r4, #1");
+					break;
+			}
+		}
+
+		// unsigned comparison of a (r5) and b (r4): 1 or 0
+		void Compare(string yes, string no)
+		{
+			W("\tcmp r5, r4");
+			W($"\tmov{yes} r4, #1");
+			W($"\tmov{no} r4, #0");
+		}
+
 		// ---- the instruments --------------------------------------------------------------------
 
 		void WriteInstruments()
@@ -937,6 +1269,8 @@ namespace Aklang2Asm
 						case "distortion": FuncDistortion(var, args); break;
 						case "onepole_flt": FuncOnepoleFlt(var, args); break;
 						case "adsr": FuncAdsr(var, args); break;
+						case "samplemixer": FuncSampleMixer(var, args); break;
+						case "bytebeat": FuncBytebeat(var, args); break;
 						default:
 							Console.WriteLine($"WARNING: Unimplemented node command '{cmd[1]}'");
 							W($"; TODO: Implement node command '{cmd[1]}'.");
@@ -985,22 +1319,30 @@ namespace Aklang2Asm
 			W("\tldr pc, [sp], #4\n");
 		}
 
+		// The end of the loop is crossfaded with the part in front of the loop start, as long as
+		// possible: fade = min(repeat length, repeat offset), like the editor and the 68000 code
+		// since V1.14 (akp2arc.py had the loop generator of the original editor):
+		//   blend = (src1[n] * rampdown + src2[n] * rampup) >> 15, ramps in steps of (32767 << 8) / fade
 		void LoopGenerator(Instrument inst)
 		{
 			W(";----------------------------------------------------------------------------");
 			W($"; Instrument {instNr} - Loop Generator (Offset: {inst.RepeatOffset} Length: {inst.RepeatLength})");
 			W(";----------------------------------------------------------------------------\n");
 
-			if (inst.RepeatLength <= 2) Console.WriteLine("WARNING: Expected loopgen length to be > 2!");
+			int fade = Math.Min(inst.RepeatLength, inst.RepeatOffset);
+			if (fade <= 0)
+			{
+				W("\t; no crossfade: the loop starts at the beginning of the sample\n");
+				return;
+			}
+			int start = inst.RepeatOffset + inst.RepeatLength - fade;
+			int delta = (32767 << 8) / fade;
 
-			W($"\tmov r7, #{inst.RepeatLength - 2}\t; BUG FIX: -2 from length to avoid reading beyond end of buffer");
-
+			Const(7, fade, "samples to crossfade");
 			W($"\tldr r6, [r10, #AK_SMPADDR+4*{instNr - 1}]");
-			W($"\tadd r6, r6, #{inst.RepeatOffset + 2}\t; src1 (additional +2 offset in AmigaKlangGUI because Amiga)\n");
-
-			W("\tsub r4, r6, r7\t; src2");
-			int delta = (int)((double)(32767 << 8) / (inst.RepeatLength - 2));
-			W($"\tmov r5, #{delta}\t; (32767<<8)/{inst.RepeatLength - 2}");
+			W($"\tadd r6, r6, #{start}\t; src1: the end of the loop");
+			W($"\tsub r4, r6, #{inst.RepeatLength}\t; src2: the part in front of the loop");
+			Const(5, delta, $"(32767<<8)/{fade}");
 			W("\tmov r14, #0\t; rampup");
 			W("\tmov r12, r11, lsl #8\t; rampdown");
 			W($"LoopGen_{instNr}:");
@@ -1016,12 +1358,10 @@ namespace Aklang2Asm
 			W("\tmov r0, r0, asl #24");
 			W("\tmov r0, r0, asr #24");
 
-			// Actual loopgen code in AmigaKlangGUI:
 			W("\tmul r0, r3, r0");
-			W("\tmov r0, r0, asr #7");
 			W("\tmul r1, r2, r1");
-			W("\tadd r0, r0, r1, asr #7");
-			W("\tmov r0, r0, asr #8");
+			W("\tadd r0, r0, r1");
+			W("\tmov r0, r0, asr #15");
 
 			W("\tstrb r0, [r6], #1");
 
@@ -1033,6 +1373,8 @@ namespace Aklang2Asm
 		}
 
 		// ---- variables --------------------------------------------------------------------------
+
+		bool usedAdpcmSlots => extAdpcm.Any(a => a);
 
 		void WriteVars()
 		{
@@ -1068,6 +1410,70 @@ namespace Aklang2Asm
 			else W("\t; No envd values to reset.");
 			W("\tmov pc, lr\n");
 
+			if (usedAdpcm)
+			{
+				// short AK_AdpcmNext(BYTE* data, int smp, LONG* state): Yamaha style 4 bit ADPCM, two
+				// nibbles per byte, the first sample in the high nibble (see Adpcm.cs of the editor)
+				W("; ============================================================================");
+				W("; r6 = data, r7 = sample number, r12 = state (value, step - 127) -> r4 = 16 bit value; uses r4-r6");
+				W("AK_AdpcmNext:");
+				W("\tstr lr, [sp, #-4]!");
+				W("\tldrb r4, [r6, r7, lsr #1]");
+				W("\ttst r7, #1");
+				W("\tmoveq r4, r4, lsr #4");
+				W("\tand r4, r4, #15\t; nibble");
+				W("\tldr r5, [r12, #4]");
+				W("\tadd r5, r5, #127\t; step");
+				W("\tand r6, r4, #7\t; m");
+				W("\tadd r14, r6, r6");
+				W("\tadd r14, r14, #1");
+				W("\tmul r14, r5, r14");
+				W("\tmov r14, r14, lsr #3\t; diff = ((2m + 1) * step) >> 3");
+				W("\ttst r4, #8");
+				W("\trsbne r14, r14, #0");
+				W("\tldr r4, [r12]");
+				W("\tadd r4, r4, r14");
+				W("\tcmp r4, r11\t\t; #32767");
+				W("\tmovgt r4, r11");
+				W("\tcmn r4, r11\t\t; #-32768");
+				W("\tmvnlt r4, r11");
+				W("\tstr r4, [r12]");
+				W("\tadr r14, AK_AdpcmSteps");
+				W("\tldrb r14, [r14, r6]");
+				W("\tmul r5, r14, r5");
+				W("\tmov r5, r5, lsr #6\t; step = step * steps[m] >> 6, 127..24576");
+				W("\tcmp r5, #24576");
+				W("\tmovhi r5, #24576");
+				W("\tcmp r5, #127");
+				W("\tmovlo r5, #127");
+				W("\tsub r5, r5, #127");
+				W("\tstr r5, [r12, #4]");
+				W("\tldr pc, [sp], #4");
+				W("AK_AdpcmSteps:");
+				W("\t.byte 57,57,57,57,77,102,128,153\n");
+			}
+
+			if (usedDivide)
+			{
+				// the ARM2 has no divide: 16 steps of shift and subtract
+				W("; ============================================================================");
+				W("; r5 = a, r4 = b (0..65535) -> r4 = a / b, r5 = a % b, both 0 for b = 0; uses r6, r12");
+				W("AK_Divide:");
+				W("\tmovs r6, r4, lsl #15");
+				W("\tmov r4, #0");
+				W("\tmoveq r5, #0");
+				W("\tmoveq pc, lr");
+				W("\tmov r12, #16");
+				W("AK_DivideLoop:");
+				W("\tcmp r5, r6");
+				W("\tsubhs r5, r5, r6");
+				W("\tadc r4, r4, r4");
+				W("\tmov r6, r6, lsr #1");
+				W("\tsubs r12, r12, #1");
+				W("\tbne AK_DivideLoop");
+				W("\tmov pc, lr\n");
+			}
+
 			W("; ============================================================================\n");
 
 			W("AK_Vars:");
@@ -1078,8 +1484,20 @@ namespace Aklang2Asm
 				W($"\t.long 0x00000000\t; Instrument {i} Length");
 
 			W("AK_ExtSmpLen:");
-			for (int i = 1; i < 9; i++)
-				W($"\t.long 0x{extSampleLens[i - 1]:x8}\t; External Sample {i} Length");
+			for (int i = 1; i <= extSampleLens.Length; i++)
+				W($"\t.long 0x{extSampleLens[i - 1]:x8}\t; External Sample {i} Length" + (extAdpcm[i - 1] ? " (4 bit ADPCM)" : ""));
+
+			if (usedAdpcmSlots)
+			{
+				// where the samples lie in the block: the delta coded ones first, the ADPCM ones after them
+				W("AK_ExtSmpOffset:");
+				int deltaOffset = 0, adpcmOffset = extDeltaLen;
+				for (int i = 0; i < extSampleLens.Length; i++)
+				{
+					W($"\t.long {(extAdpcm[i] ? adpcmOffset : deltaOffset)}\t; External Sample {i + 1}");
+					if (extAdpcm[i]) adpcmOffset += (extSampleLens[i] + 1) / 2; else deltaOffset += extSampleLens[i];
+				}
+			}
 
 			W("AK_NoiseSeeds:");
 			W("\t.long 0x67452301\n\t.long 0xefcdab89\n\t.long 0x00000000");
@@ -1121,9 +1539,9 @@ namespace Aklang2Asm
 		{
 			// Standard header.
 			W("; ============================================================================");
-			W("; Generated with Aklang2Acorn.py v1.0, by kieran/Bitshifters 2024.");
+			W("; Generated with Aklang2Asm V1.22 (-arm), by Dan/Lemon.");
+			W("; ARM code generator: Aklang2Acorn.py v1.0, by kieran/Bitshifters 2024 (https://github.com/kieranhj/archieklang).");
 			W("; Based on Alcatraz Amigaklang rendering core. (c) Jochen 'Virgill' Feldkötter 2020-2024.");
-			W("; And Aklang2Asm by Dan/Lemon. 2021-2022.");
 			W($"; Input Aklang script = '{source}'");
 			W(";");
 			W("; Define macro 'AK_PROGRESS' for whatever per-instrument progress callback you require (if any).");
@@ -1133,7 +1551,7 @@ namespace Aklang2Asm
 			W("; ============================================================================\n");
 
 			W(".equ AK_MaxInstruments,\t\t31");
-			W(".equ AK_MaxExtSamples,\t\t8\n");
+			W($".equ AK_MaxExtSamples,\t\t{extSampleLens.Length}\n");
 
 			W(".equ AK_LPF,\t\t\t\t0");
 			W(".equ AK_HPF,\t\t\t\t1");
@@ -1158,7 +1576,9 @@ namespace Aklang2Asm
 			W(".equ AK_ADSRVALUES,\t\t\t(AK_ADSRValues-AK_Vars)\n");
 
 			W($".equ AK_SMP_LEN,\t\t\t{totalSmpLen}");
-			W($".equ AK_EXT_SMP_LEN,\t\t{totalExtSmpLen}\n");
+			W($".equ AK_EXT_SMP_LEN,\t\t{totalExtSmpLen}");
+			W($".equ AK_EXT_DELTA_LEN,\t\t{extDeltaLen}\t; delta coded part of the external samples (the rest is 4 bit ADPCM)");
+			W(".equ AK_VERSION,\t\t\t122\n");
 
 			W("; ============================================================================");
 			W("; R8 = Sample Buffer Start Address (AK_SMP_LEN bytes)");
@@ -1181,18 +1601,30 @@ namespace Aklang2Asm
 			W("\tbne SmpAdrLoop");
 			W("\tmov r7, #AK_MaxExtSamples");
 			W("\tadr r4, AK_ExtSmpAddr");
-			W("\tadr r5, AK_ExtSmpLen");
-			W("\tmov r0, r10");
-			W("ExSmpAdrLoop:");
-			W("\tstr r0, [r4], #4");
-			W("\tldr r1, [r5], #4");
-			W("\tadd r0, r0, r1");
+			if (usedAdpcmSlots)
+			{
+				// ADPCM samples take half the bytes and lie after the delta samples: a table of offsets
+				W("\tadr r5, AK_ExtSmpOffset");
+				W("ExSmpAdrLoop:");
+				W("\tldr r1, [r5], #4");
+				W("\tadd r0, r10, r1");
+				W("\tstr r0, [r4], #4");
+			}
+			else
+			{
+				W("\tadr r5, AK_ExtSmpLen");
+				W("\tmov r0, r10");
+				W("ExSmpAdrLoop:");
+				W("\tstr r0, [r4], #4");
+				W("\tldr r1, [r5], #4");
+				W("\tadd r0, r0, r1");
+			}
 			W("\tsubs r7, r7, #1");
 			W("\tbne ExSmpAdrLoop\n");
 
-			W(".if AK_EXT_SMP_LEN > 0");
+			W(".if AK_EXT_DELTA_LEN > 0");
 			W("\t; Convert external samples from stored deltas");
-			W("\tmov r7, #AK_EXT_SMP_LEN");
+			W("\tmov r7, #AK_EXT_DELTA_LEN");
 			W("\tmov r6, r10");
 			W("\tmov r0, #0");
 			W("DeltaLoop:");
