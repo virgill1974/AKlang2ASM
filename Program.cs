@@ -48,6 +48,8 @@ namespace Aklang2Asm
 		static bool wide = false;				// -16: 16 bit samples (words) instead of 8 bit
 		// -unz: 16 bit samples, one routine per instrument for the UNZ player of Platon42 (see UnzMap)
 		static bool unz = false;
+		// -arm: ARM code for the Acorn Archimedes (ArmGenerator, a port of kieran's akp2arc.py)
+		static bool arm = false;
 		static List<int> unzInstruments = new List<int>();				// instruments with a routine (1 based)
 		static Dictionary<int, SortedSet<int>> unzDepends = new Dictionary<int, SortedSet<int>>();	// the samples they read
 
@@ -84,7 +86,7 @@ namespace Aklang2Asm
 
 			if (args.Length < 2)
 			{
-				Console.WriteLine("Usage: Aklang2Asm <script.txt> <output.asm> [-p|-pf] [-e] [-16|-unz]");
+				Console.WriteLine("Usage: Aklang2Asm <script.txt> <output.asm> [-p|-pf] [-e] [-16|-unz|-arm]");
 				Console.WriteLine("Press Any Key To Continue...");
 				WaitKey();
 				return;
@@ -124,6 +126,11 @@ namespace Aklang2Asm
 					wide = true;
 					unz = true;
 				}
+				else if ( args[a] == "-arm" )
+				{
+					Console.WriteLine("ARM code for the Acorn Archimedes");
+					arm = true;
+				}
 				else
 				{
 					Console.WriteLine("Unknown option!");
@@ -143,6 +150,13 @@ namespace Aklang2Asm
 				return;
 			}
 
+			if (arm && (wide || earlyPlay || useProgress))
+			{
+				// 8 bit samples; progress is a macro of the ARM source (AK_PROGRESS / AK_FINE_PROGRESS)
+				Console.WriteLine("Error: -arm cannot be used together with -16, -unz, -e, -p or -pf");
+				return;
+			}
+
 			if (!File.Exists(args[0]))
 			{
 				Console.WriteLine("Could not find script file: " + args[0]);
@@ -152,6 +166,22 @@ namespace Aklang2Asm
 			}
 
 			string instrumentsMain = File.ReadAllText(args[0]);
+
+			if (arm)
+			{
+				try
+				{
+					File.WriteAllText(args[1], ArmGenerator.Generate(args[0], instrumentsMain));
+				}
+				catch (FormatException e)
+				{
+					Console.WriteLine("Error: " + e.Message);
+					return;
+				}
+				Console.WriteLine("Press Any Key To Continue...");
+				WaitKey();
+				return;
+			}
 
 			List<string> instruments = instrumentsMain.Split('$').ToList();
 			string externalSampleInfo = instruments[0];
