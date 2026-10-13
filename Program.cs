@@ -48,6 +48,8 @@ namespace Aklang2Asm
 		static bool wide = false;				// -16: 16 bit samples (words) instead of 8 bit
 		// -unz: 16 bit samples, one routine per instrument for the UNZ player of Platon42 (see UnzMap)
 		static bool unz = false;
+		// -arm: ARM code for the Acorn Archimedes (ArmGenerator, a port of kieran's akp2arc.py)
+		static bool arm = false;
 		static List<int> unzInstruments = new List<int>();				// instruments with a routine (1 based)
 		static Dictionary<int, SortedSet<int>> unzDepends = new Dictionary<int, SortedSet<int>>();	// the samples they read
 
@@ -84,7 +86,7 @@ namespace Aklang2Asm
 
 			if (args.Length < 2)
 			{
-				Console.WriteLine("Usage: Aklang2Asm <script.txt> <output.asm> [-p|-pf] [-e] [-16|-unz]");
+				Console.WriteLine("Usage: Aklang2Asm <script.txt> <output.asm> [-p|-pf] [-e] [-16|-unz|-arm]");
 				Console.WriteLine("Press Any Key To Continue...");
 				WaitKey();
 				return;
@@ -124,6 +126,11 @@ namespace Aklang2Asm
 					wide = true;
 					unz = true;
 				}
+				else if ( args[a] == "-arm" )
+				{
+					Console.WriteLine("ARM code for the Acorn Archimedes");
+					arm = true;
+				}
 				else
 				{
 					Console.WriteLine("Unknown option!");
@@ -143,6 +150,13 @@ namespace Aklang2Asm
 				return;
 			}
 
+			if (arm && (wide || earlyPlay || useProgress))
+			{
+				// 8 bit samples; progress is a macro of the ARM source (AK_PROGRESS / AK_FINE_PROGRESS)
+				Console.WriteLine("Error: -arm cannot be used together with -16, -unz, -e, -p or -pf");
+				return;
+			}
+
 			if (!File.Exists(args[0]))
 			{
 				Console.WriteLine("Could not find script file: " + args[0]);
@@ -152,6 +166,22 @@ namespace Aklang2Asm
 			}
 
 			string instrumentsMain = File.ReadAllText(args[0]);
+
+			if (arm)
+			{
+				try
+				{
+					File.WriteAllText(args[1], ArmGenerator.Generate(args[0], instrumentsMain));
+				}
+				catch (FormatException e)
+				{
+					Console.WriteLine("Error: " + e.Message);
+					return;
+				}
+				Console.WriteLine("Press Any Key To Continue...");
+				WaitKey();
+				return;
+			}
 
 			List<string> instruments = instrumentsMain.Split('$').ToList();
 			string externalSampleInfo = instruments[0];
@@ -192,7 +222,7 @@ namespace Aklang2Asm
 
 			asmCode += DividerCode();
 			asmCode += ";\n";
-			asmCode += "; Generated with Aklang2Asm V1.21, by Dan/Lemon. 2021-2024.\n";
+			asmCode += "; Generated with Aklang2Asm V1.22, by Dan/Lemon. 2021-2024.\n";
 			asmCode += ";\n";
 			asmCode += "; Based on Alcatraz Amigaklang rendering core. (c) Jochen 'Virgill' Feldkötter 2020.\n";
 			asmCode += ";\n";
@@ -244,6 +274,9 @@ namespace Aklang2Asm
 			asmCode += "; - 16 bit samples (-16, -unz): an ADPCM imported sample is the 16 bit value of the decoder\n";
 			asmCode += ";   (the 8 bit code takes its high byte as before)\n";
 			asmCode += ";\n";
+			asmCode += "; What's new in V1.22?\n";
+			asmCode += "; - Option -arm: ARM code for the Acorn Archimedes (a port of akp2arc.py by kieran/Bitshifters)\n";
+			asmCode += ";\n";
 			asmCode += "; What's new in V1.21?\n";
 			asmCode += "; - Chord generator: a voice that has passed the end of the source sample is silent (it read\n";
 			asmCode += ";   the memory behind the sample, i.e. the next instrument). -unz did that already.\n";
@@ -272,7 +305,7 @@ namespace Aklang2Asm
 			asmCode += "AK_SMP_LEN				equ %SAMPLESIZE%\n";
 			asmCode += "AK_EXT_SMP_LEN			equ " + externalSampleTotalLength.ToString() + "\n";
 			asmCode += "AK_TMP_LEN				equ %LARGEBUFFSIZE%\n";
-			asmCode += "AK_VERSION				equ 121\n";
+			asmCode += "AK_VERSION				equ 122\n";
 			asmCode += "AK_16BIT				equ " + ( wide ? "1" : "0" ) + "		; 1 = 16 bit samples (signed words)\n";
 			asmCode += "\n";
 			asmCode += "AK_Generate:\n";
@@ -3569,7 +3602,7 @@ namespace Aklang2Asm
 			code += "AK_TMP_MEMORY_SIZE		equ %LARGEBUFFSIZE%\n";
 			code += "\n";
 			code += "AK_EXT_SMP_LEN			equ " + externalSampleTotalLength.ToString() + "\n";
-			code += "AK_VERSION				equ 121\n";
+			code += "AK_VERSION				equ 122\n";
 			code += "AK_16BIT				equ 1		; 16 bit samples (signed words)\n";
 			code += "\n";
 			code += "ak_delta_decode_extsamples:\n";
