@@ -1578,7 +1578,7 @@ namespace Aklang2Asm
 			W($".equ AK_SMP_LEN,\t\t\t{totalSmpLen}");
 			W($".equ AK_EXT_SMP_LEN,\t\t{totalExtSmpLen}");
 			W($".equ AK_EXT_DELTA_LEN,\t\t{extDeltaLen}\t; delta coded part of the external samples (the rest is 4 bit ADPCM)");
-			W(".equ AK_VERSION,\t\t\t122\n");
+			W(".equ AK_VERSION,\t\t\t123\n");
 
 			W("; ============================================================================");
 			W("; R8 = Sample Buffer Start Address (AK_SMP_LEN bytes)");

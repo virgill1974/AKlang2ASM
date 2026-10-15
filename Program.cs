@@ -222,7 +222,7 @@ namespace Aklang2Asm
 
 			asmCode += DividerCode();
 			asmCode += ";\n";
-			asmCode += "; Generated with Aklang2Asm V1.22, by Dan/Lemon. 2021-2024.\n";
+			asmCode += "; Generated with Aklang2Asm V1.23, by Dan/Lemon. 2021-2024.\n";
 			asmCode += ";\n";
 			asmCode += "; Based on Alcatraz Amigaklang rendering core. (c) Jochen 'Virgill' Feldkötter 2020.\n";
 			asmCode += ";\n";
@@ -281,6 +281,11 @@ namespace Aklang2Asm
 			asmCode += "; - Chord generator: a voice that has passed the end of the source sample is silent (it read\n";
 			asmCode += ";   the memory behind the sample, i.e. the next instrument). -unz did that already.\n";
 			asmCode += ";\n";
+			asmCode += "; What's new in V1.23?\n";
+			asmCode += "; - Delay with a gain of 1, 2, 4 ... 64: the shift wrote 'asr.w #n,@d4' (thanks Platon42)\n";
+			asmCode += "; - Chord generator: the end check of V1.21 only for the voices that can reach the end of\n";
+			asmCode += ";   their source (known from the lengths); 16 bit: shorter limit to a word\n";
+			asmCode += ";\n";
 			if (unz)
 			{
 				asmCode += UnzHeaderCode();
@@ -305,7 +310,7 @@ namespace Aklang2Asm
 			asmCode += "AK_SMP_LEN				equ %SAMPLESIZE%\n";
 			asmCode += "AK_EXT_SMP_LEN			equ " + externalSampleTotalLength.ToString() + "\n";
 			asmCode += "AK_TMP_LEN				equ %LARGEBUFFSIZE%\n";
-			asmCode += "AK_VERSION				equ 122\n";
+			asmCode += "AK_VERSION				equ 123\n";
 			asmCode += "AK_16BIT				equ " + ( wide ? "1" : "0" ) + "		; 1 = 16 bit samples (signed words)\n";
 			asmCode += "\n";
 			asmCode += "AK_Generate:\n";
@@ -1590,7 +1595,7 @@ namespace Aklang2Asm
 			{
 				if (mulRightShifts.ContainsKey(gain))
 				{
-					code += "				asr.w	@GS,@d4\n";
+					code += "				asr.w	@GS,d4\n";
 				}
 				else if (gain.Contains("#"))
 				{
@@ -2478,26 +2483,36 @@ namespace Aklang2Asm
 
 			string code = string.Empty;
 
+			bool[] check = ChordChecks(inputs[1], new[] { int.Parse(inputs[2]), int.Parse(inputs[3]), int.Parse(inputs[4]) }, shift);
+			bool voiceCheck = check[1] || check[2] || check[3];
+
 			if (wide)
-				return ChordGenWide(outReg, instance, basesample, note1, note2, note3, shift, shiftInt);
+				return ChordGenWide(outReg, instance, basesample, note1, note2, note3, shift, shiftInt, check);
 
 			// V1.21: a voice that has passed the end of the source is silent (it read the memory behind
-			// the source: the next instrument). a6 = length of the source - shift, the limit of the positions
+			// the source: the next instrument). a6 = length of the source - shift, the limit of the positions.
+			// V1.23: only for the voices that can get there (ChordChecks).
 			code += "				move.l	AK_SmpAddr+@BS(a5),a4\n";
-			code += "				move.l	AK_SmpLen+@BS(a5),a6\n";
-			code += "				moveq	#0,d6\n";
-			code += "				cmp.l	a6,d7\n";
-			code += "				bge.s	.ChordEnd0_" + localLabel + "\n";
+			if (check[0] || voiceCheck)
+				code += "				move.l	AK_SmpLen+@BS(a5),a6\n";
+			if (check[0])
+			{
+				code += "				moveq	#0,d6\n";
+				code += "				cmp.l	a6,d7\n";
+				code += "				bge.s	.ChordEnd0_" + localLabel + "\n";
+			}
 			code += "				move.b	(a4,d7.l),d6\n";
 			code += "				ext.w	d6\n";
-			code += ".ChordEnd0_" + localLabel + "\n";
+			if (check[0])
+				code += ".ChordEnd0_" + localLabel + "\n";
 
 			if (!shift.Contains("#"))
 			{
 				code += "				move.w	@SH,d4\n";
 				code += "				and.w	#255,d4\n";
 				code += "				add.w	d4,a4\n";
-				code += "				sub.w	d4,a6\n";
+				if (voiceCheck)
+					code += "				sub.w	d4,a6\n";
 			}
 			else
 			{
@@ -2506,12 +2521,14 @@ namespace Aklang2Asm
 					if (shiftInt <= 8)
 					{
 						code += "				addq.w	@SH,a4\n";
-						code += "				subq.w	@SH,a6\n";
+						if (voiceCheck)
+							code += "				subq.w	@SH,a6\n";
 					}
 					else
 					{
 						code += "				add.w	@SH,a4\n";
-						code += "				sub.w	@SH,a6\n";
+						if (voiceCheck)
+							code += "				sub.w	@SH,a6\n";
 					}
 				}
 			}
@@ -2522,34 +2539,46 @@ namespace Aklang2Asm
 			{
 				code += "				move.w	AK_OpInstance+AK_CHORD1+@IN(a5),d4\n";
 				code += "				add.l	@N1,AK_OpInstance+AK_CHORD1+@IN(a5)\n";
-				code += "				cmp.l	a6,d4\n";
-				code += "				bge.s	.ChordEnd1_" + localLabel + "\n";
+				if (check[1])
+				{
+					code += "				cmp.l	a6,d4\n";
+					code += "				bge.s	.ChordEnd1_" + localLabel + "\n";
+				}
 				code += "				move.b	(a4,d4.l),d5\n";
 				code += "				ext.w	d5\n";
 				code += "				add.w	d5,d6\n";
-				code += ".ChordEnd1_" + localLabel + "\n";
+				if (check[1])
+					code += ".ChordEnd1_" + localLabel + "\n";
 			}
 			if (note2 != "#0" && note2 != note1)
 			{
 				code += "				move.w	AK_OpInstance+AK_CHORD2+@IN(a5),d4\n";
 				code += "				add.l	@N2,AK_OpInstance+AK_CHORD2+@IN(a5)\n";
-				code += "				cmp.l	a6,d4\n";
-				code += "				bge.s	.ChordEnd2_" + localLabel + "\n";
+				if (check[2])
+				{
+					code += "				cmp.l	a6,d4\n";
+					code += "				bge.s	.ChordEnd2_" + localLabel + "\n";
+				}
 				code += "				move.b	(a4,d4.l),d5\n";
 				code += "				ext.w	d5\n";
 				code += "				add.w	d5,d6\n";
-				code += ".ChordEnd2_" + localLabel + "\n";
+				if (check[2])
+					code += ".ChordEnd2_" + localLabel + "\n";
 			}
 			if (note3 != "#0" && note3 != note1 && note3 != note2)
 			{
 				code += "				move.w	AK_OpInstance+AK_CHORD3+@IN(a5),d4\n";
 				code += "				add.l	@N3,AK_OpInstance+AK_CHORD3+@IN(a5)\n";
-				code += "				cmp.l	a6,d4\n";
-				code += "				bge.s	.ChordEnd3_" + localLabel + "\n";
+				if (check[3])
+				{
+					code += "				cmp.l	a6,d4\n";
+					code += "				bge.s	.ChordEnd3_" + localLabel + "\n";
+				}
 				code += "				move.b	(a4,d4.l),d5\n";
 				code += "				ext.w	d5\n";
 				code += "				add.w	d5,d6\n";
-				code += ".ChordEnd3_" + localLabel + "\n";
+				if (check[3])
+					code += ".ChordEnd3_" + localLabel + "\n";
 			}
 
 			/*code += "				cmp.l	#32767,d6\n";
@@ -2600,24 +2629,31 @@ namespace Aklang2Asm
 
 		// 16 bit samples (-16): half of every voice is summed in 32 bit and limited to 16 bit, the
 		// positions (16.16 counters) are the same as for 8 bit samples
-		static string ChordGenWide(string outReg, string instance, string basesample, string note1, string note2, string note3, string shift, int shiftInt)
+		static string ChordGenWide(string outReg, string instance, string basesample, string note1, string note2, string note3, string shift, int shiftInt, bool[] check)
 		{
 			string code = string.Empty;
+			bool voiceCheck = check[1] || check[2] || check[3];
 
 			// A voice that has passed the end of the source is silent (until V1.20 AK_Generate read the
 			// memory behind the source there; the samples of -unz are not even one behind the other).
-			// a6 = length of the source - shift, the limit of the voice positions
+			// a6 = length of the source - shift, the limit of the voice positions. V1.23: only for the
+			// voices that can get there (ChordChecks).
 			code += "				move.l	AK_SmpAddr+@BS(a5),a4\n";
-			code += "				move.l	AK_SmpLen+@BS(a5),a6\n";
-			code += "				moveq	#0,d6\n";
-			code += "				cmp.l	a6,d7\n";
-			code += "				bge.s	.ChordEnd0_" + localLabel + "\n";
-			code += "				add.l	d7,a4\n";
-			code += "				move.w	(a4,d7.l),d6\n";
+			if (check[0] || voiceCheck)
+				code += "				move.l	AK_SmpLen+@BS(a5),a6\n";
+			if (check[0])
+			{
+				code += "				moveq	#0,d6\n";
+				code += "				cmp.l	a6,d7\n";
+				code += "				bge.s	.ChordEnd0_" + localLabel + "\n";
+			}
+			code += "				move.l	d7,d4\n";
+			code += "				add.l	d4,d4\n";
+			code += "				move.w	(a4,d4.l),d6\n";
 			code += "				asr.w	#1,d6\n";
 			code += "				ext.l	d6\n";
-			code += "				sub.l	d7,a4\n";
-			code += ".ChordEnd0_" + localLabel + "\n";
+			if (check[0])
+				code += ".ChordEnd0_" + localLabel + "\n";
 
 			if (!shift.Contains("#"))
 			{
@@ -2625,7 +2661,8 @@ namespace Aklang2Asm
 				code += "				and.w	#255,d4\n";
 				code += "				add.w	d4,a4\n";
 				code += "				add.w	d4,a4\n";
-				code += "				sub.w	d4,a6\n";
+				if (voiceCheck)
+					code += "				sub.w	d4,a6\n";
 			}
 			else if (shiftInt != 0)
 			{
@@ -2633,7 +2670,8 @@ namespace Aklang2Asm
 					code += "				addq.w	#" + (shiftInt * 2).ToString() + ",a4\n";
 				else
 					code += "				add.w	#" + (shiftInt * 2).ToString() + ",a4\n";
-				code += "				sub.w	#" + shiftInt.ToString() + ",a6\n";
+				if (voiceCheck)
+					code += "				sub.w	#" + shiftInt.ToString() + ",a6\n";
 			}
 
 			string[] notes = { note1, note2, note3 };
@@ -2646,25 +2684,29 @@ namespace Aklang2Asm
 				code += "				moveq	#0,d4\n";
 				code += "				move.w	" + counter + ",d4\n";
 				code += "				add.l	" + notes[n] + "," + counter + "\n";
-				code += "				cmp.l	a6,d4\n";
-				code += "				bge.s	.ChordEnd" + (n + 1).ToString() + "_" + localLabel + "\n";
+				if (check[n + 1])
+				{
+					code += "				cmp.l	a6,d4\n";
+					code += "				bge.s	.ChordEnd" + (n + 1).ToString() + "_" + localLabel + "\n";
+				}
 				code += "				add.l	d4,d4\n";
 				code += "				move.w	(a4,d4.l),d5\n";
 				code += "				asr.w	#1,d5\n";
 				code += "				ext.l	d5\n";
 				code += "				add.l	d5,d6\n";
-				code += ".ChordEnd" + (n + 1).ToString() + "_" + localLabel + "\n";
+				if (check[n + 1])
+					code += ".ChordEnd" + (n + 1).ToString() + "_" + localLabel + "\n";
 			}
 
-			code += "				cmp.l	#32767,d6\n";
-			code += "				ble.s	.NoClampMaxChord_" + localLabel + "\n";
-			code += "				move.w	#32767,d6\n";
-			code += "				bra.s	.NoClampMinChord_" + localLabel + "\n";
-			code += ".NoClampMaxChord_" + localLabel + "\n";
-			code += "				cmp.l	#-32768,d6\n";
-			code += "				bge.s	.NoClampMinChord_" + localLabel + "\n";
-			code += "				move.w	#-32768,d6\n";
-			code += ".NoClampMinChord_" + localLabel + "\n";
+			// limit to 16 bit (V1.23, the way of Platon42): the sum lies between -65536 and 65532, so a
+			// sum that does not fit in a word has $0000 or $ffff as its upper word -> $7fff / $8000
+			code += "				move.w	d6,d5\n";
+			code += "				ext.l	d5\n";
+			code += "				cmp.l	d6,d5\n";
+			code += "				beq.s	.NoClampChord_" + localLabel + "\n";
+			code += "				swap	d6\n";
+			code += "				eor.w	#$7fff,d6\n";
+			code += ".NoClampChord_" + localLabel + "\n";
 			code += "				move.w	d6,@OR\n";
 
 			code = code.Replace("@OR", outReg);
@@ -3452,6 +3494,25 @@ namespace Aklang2Asm
 			return "#" + decayValue.ToString();
 		}
 
+		// V1.23: which voices of a chord can reach the end of their source. The lengths are known here,
+		// so only these voices get the check of V1.21 (Platon42). [0] = the root (position = smp,
+		// limit = length of the source), [1..3] = note 1-3 (position = smp * step / 256 + shift). A
+		// voice without the check never reaches the end, so the result is the same.
+		static bool[] ChordChecks(string source, int[] notes, string shift)
+		{
+			int[] steps = { 0, 271, 287, 304, 322, 342, 362, 383, 406, 430, 456, 483, 512 };
+			bool[] check = { true, true, true, true };
+			int current = instrumentLengthInt.Count - 1;
+			int src;
+			if (!int.TryParse(source, out src) || src < 0 || src >= current) return check;
+			long length = instrumentLengthInt[current], sourceLength = instrumentLengthInt[src];
+			int maxShift = shift.Contains("#") ? int.Parse(shift.Substring(1)) : 255;
+			check[0] = length > sourceLength;
+			for (int n = 0; n < 3; n++)
+				check[n + 1] = (length - 1) * steps[notes[n]] / 256 >= sourceLength - maxShift;
+			return check;
+		}
+
 		static string GetChordValue(int index)
 		{
 			int[] chordTable = { 0 << 8, 271 << 8, 287 << 8, 304 << 8, 322 << 8, 342 << 8,
@@ -3602,7 +3663,7 @@ namespace Aklang2Asm
 			code += "AK_TMP_MEMORY_SIZE		equ %LARGEBUFFSIZE%\n";
 			code += "\n";
 			code += "AK_EXT_SMP_LEN			equ " + externalSampleTotalLength.ToString() + "\n";
-			code += "AK_VERSION				equ 122\n";
+			code += "AK_VERSION				equ 123\n";
 			code += "AK_16BIT				equ 1		; 16 bit samples (signed words)\n";
 			code += "\n";
 			code += "ak_delta_decode_extsamples:\n";

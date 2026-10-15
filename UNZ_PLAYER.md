@@ -1,6 +1,6 @@
 # Aklang2Asm `-unz`: 16 bit samples for the UNZ player
 
-*For Platon42. Aklang2Asm V1.21, AmigaKlang ImGui editor V1.5.*
+*For Platon42. Aklang2Asm V1.23, AmigaKlang ImGui editor V1.5.*
 
 `-unz` makes Aklang2Asm write the source that `ExemusicConv.kt` made out of the 8 bit output of
 V1.1: 16 bit samples, one routine per instrument, the variables and sample addresses in the
@@ -110,7 +110,13 @@ distortion and all ten loop generators.
    `AK_SamLengths` itself is unchanged, in bytes.
 5. **Chord generator.** Every voice is halved and then summed in 32 bit, like the editor (the
    script summed first: at most 2 of 65536 different). A voice that has passed the end of its
-   source is silent; the old code went on reading the memory behind the sample.
+   source is silent; the old code went on reading the memory behind the sample. V1.23: the check
+   is only generated for the voices that can get there (known from the lengths), and the sum is
+   limited with `swap` / `eor.w #$7fff`.
+   The shift of the chord is a number of samples, so for words it is twice as many bytes:
+   `chordgen(0, 0, 3, 7, 10, 4)` needs `addq.w #8,a4`. The script added `#4` (half, like the
+   offsets of clone sample).
+8. **Delay** with a gain of 1, 2, 4 … 64: V1.23 writes `asr.w #n,d4` (it was `@d4`).
 6. **Reverse clone** takes the end of the source as start + 2 × length, so the samples need not
    lie one behind the other.
 7. **Instruments without operators** have no routine and length 0 (the script only did that for

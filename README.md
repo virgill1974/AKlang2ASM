@@ -109,6 +109,18 @@ the source minus the shift, checked per voice (`cmp.l a6,dN / bge`), about 20 by
 `chordgen`. The AmigaKlang editor renders the same (its preview had zeros there after loading a
 patch). Scripts without `chordgen` give the same code as V1.20.
 
+V1.23 (suggested by Platon42): the lengths of both samples, the steps of the notes and the shift
+(a variable counts as 255) are known when the code is generated, so only the voices that can
+reach the end of the source get the check; the others never take that branch, the samples stay
+the same. The 16 bit code limits the sum to a word with `swap` / `eor.w #$7fff` instead of two
+compares.
+
+## Delay with a gain of 1, 2, 4 ... 64 (V1.23)
+
+For these gains `dly_cyc` shifts instead of multiplying, and the code said `asr.w #n,@d4`
+instead of `asr.w #n,d4` (reported by Platon42). Fixed in every 68000 mode; the ARM code was
+not affected.
+
 ## ARM code for the Acorn Archimedes (`-arm`, V1.22)
 
 `Aklang2Asm script.txt arcmusic.asm -arm` writes `AK_Generate` as ARM code in the standard
@@ -125,7 +137,7 @@ Interface, as in `akp2arc.py`:
 | `AK_Generate` | `R8` = sample buffer (`AK_SMP_LEN` bytes), `R9` = temporary work buffer (`AK_TempBufferSize` bytes = `AK_MaxTempBuffers` × 8192), `R10` = external samples (`AK_EXT_SMP_LEN` bytes). Returns with `ldr pc, [sp], #4`; all registers are used. |
 | `AK_PROGRESS`, `AK_FINE_PROGRESS` | macros you define (may be empty): called per instrument and per sample |
 | `AK_CLEAR_FIRST_2_BYTES` | symbol you define: 1 clears the first two bytes of each sample like the Amiga code |
-| `AK_VERSION` | 122 |
+| `AK_VERSION` | 123 (the version of aklang2asm) |
 
 The samples are 8 bit signed, like the 68000 code without `-16`; the conversion to the
 logarithmic format of the Archimedes is left to the player, as in archieklang.
@@ -218,7 +230,7 @@ The formula is compiled into `.w` code on `d4` (`d5`/`d6` and the stack as scrat
 `Bytebeat.cs` holds parser and semantics; the AmigaKlang editor uses the same file, so the
 editor preview and the Amiga render the same samples.
 
-V1.17 also defines `AK_VERSION equ 117` (V1.18: `118` … V1.22: `122`) in the header (players can check for a
+V1.17 also defines `AK_VERSION equ 117` (V1.18: `118` … V1.23: `123`) in the header (players can check for a
 minimum version) and prints a warning for script lines with an unknown operator instead of silently
 skipping them.
 
@@ -232,7 +244,7 @@ shorter than 257 samples), which also saves 6 bytes per loop.
 
 The generated `output.asm` contains:
 
-- Header banner describing the tool version (currently 1.22) and usage of `AK_Generate`.
+- Header banner describing the tool version (currently 1.23) and usage of `AK_Generate`.
 - Constant section with `AK_USE_PROGRESS`, `AK_FINE_PROGRESS`, buffer sizes (`AK_SMP_LEN`, `AK_EXT_SMP_LEN`, etc.).
 - The `AK_Generate` routine, which:
   - Computes sample and external sample base addresses.
