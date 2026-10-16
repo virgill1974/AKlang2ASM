@@ -36,18 +36,18 @@ The compiled executable will land in `bin/<config>/<target>/Aklang2Asm.exe`.
 Aklang2Asm <script.txt> <output.asm> [-p|-pf] [-e] [-16|-unz|-arm]
 ```
 
-- `script.txt` — AmigaKlang export script (see format below).
-- `output.asm` — Destination file for the generated 68k assembly.
-- `-p` — (optional) enable coarse progress (current instrument number stored via `a3`).
-- `-pf` — (optional) enable fine progress (current sample byte stored via `a3`).
-- `-e` — (optional, V1.16) early play: the first word of each sample is cleared right after
+- `script.txt` - AmigaKlang export script (see format below).
+- `output.asm` - Destination file for the generated 68k assembly.
+- `-p` - (optional) enable coarse progress (current instrument number stored via `a3`).
+- `-pf` - (optional) enable fine progress (current sample byte stored via `a3`).
+- `-e` - (optional, V1.16) early play: the first word of each sample is cleared right after
   the sample is rendered (not only at the end), so a replayer can start while the later samples
   are still being rendered. Samples that clone/chord/mix an earlier one then see two zero bytes
   at its start.
-- `-16` — (optional, V1.18) 16 bit samples, see below. Not together with `-e`.
-- `-unz` — (optional, V1.19) 16 bit samples, one routine per instrument, see below. Not together
+- `-16` - (optional, V1.18) 16 bit samples, see below. Not together with `-e`.
+- `-unz` - (optional, V1.19) 16 bit samples, one routine per instrument, see below. Not together
   with `-p`, `-pf` or `-e`.
-- `-arm` — (optional, V1.22) ARM code for the Acorn Archimedes instead of 68000 code, see below.
+- `-arm` - (optional, V1.22) ARM code for the Acorn Archimedes instead of 68000 code, see below.
   Not together with any of the other options.
 
 If no option is supplied, progress writes are disabled. The header also defines `AK_TMP_LEN`,
@@ -176,7 +176,7 @@ follows the arithmetic of the editor.)
 
 The script is a plain-text file that the Windows AmigaKlang tool can export. At a high level:
 
-1. **External sample lengths** — first line (before the first `$`) contains comma-separated integer lengths for up to eight (V1.15: twelve) imported samples. Example:
+1. **External sample lengths** - first line (before the first `$`) contains comma-separated integer lengths for up to eight (V1.15: twelve) imported samples. Example:
    ```
    1024,0,0,2048,0,0,0,0
    ```
@@ -187,7 +187,7 @@ The script is a plain-text file that the Windows AmigaKlang tool can export. At 
    ADPCM samples are decoded by `imported_sample` while it plays them (shared routine
    `AK_AdpcmNext`, ~90 bytes, 2 words of instance data per use), so they need no extra memory.
    Scripts with eight lengths and no `a` produce the same code as before.
-2. **Instrument blocks** — each block is separated by `$`. Inside a block:
+2. **Instrument blocks** - each block is separated by `$`. Inside a block:
    ```
    <name>,<length>,<loopOffset>,<loopLength>,<loopFlag>#
    op1;
