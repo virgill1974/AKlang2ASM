@@ -125,7 +125,7 @@ distortion and all ten loop generators.
 ## What is new compared with V1.1
 
 - **Sample mixer**: plays a pattern of the editor into a sample (depends on its source instruments).
-- **Clone / clone reverse with transpose**, also modulated by V1–V4.
+- **Clone / clone reverse with transpose**, also modulated by V1-V4.
 - **Loop generator**: the loop may be longer than the part in front of it.
 - **Bytebeat**: a formula over the sample number, bit-identical with the editor.
 - **Up to 12 external samples**, and **4 bit ADPCM** imports. The header of the generated file
